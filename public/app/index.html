@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ru" data-theme="bw">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta name="format-detection" content="telephone=no">
+<meta name="theme-color" content="#000000" id="metaTheme">
+<title>FAMAS STORE ⁂ — магазин цифровых ключей</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23000'/%3E%3Ctext x='32' y='45' font-family='Georgia,serif' font-size='34' fill='%23fff' text-anchor='middle'%3E%E2%81%82%3C/text%3E%3C/svg%3E">
+<script>
+/* тема и стекло — ДО первого рендера, чтобы не было вспышки */
+(function () {
+  try {
+    var t = localStorage.getItem('famas_theme');
+    if (t === 'dracula' || t === 'bw') document.documentElement.setAttribute('data-theme', t);
+    if (localStorage.getItem('famas_glass') === '1') document.documentElement.setAttribute('data-glass', '1');
+  } catch (e) { /* приватный режим — молча */ }
+})();
+</script>
+<link rel="stylesheet" href="./app.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+
+<!-- блобы жидкого стекла (видны только при data-glass="1") -->
+<div class="blobs" aria-hidden="true"><i class="bl b1"></i><i class="bl b2"></i><i class="bl b3"></i></div>
+<!-- лёгкий шум-плёнка -->
+<div class="noise" aria-hidden="true"></div>
+
+<!-- плашка ошибок сети -->
+<div class="errbar mono" id="errbar" role="alert"><span id="errbarText"></span></div>
+
+<main class="wrap">
+
+  <!-- ══════════ 01 · МАГАЗИН ══════════ -->
+  <section class="tabpane" id="tab-shop">
+    <header class="masthead">
+      <div class="mast-row">
+        <span class="mono tiny dim caps">№ 001 · витрина</span>
+        <button type="button" class="iconbtn" id="btnSettings" aria-label="Настройки">⚙︎</button>
+      </div>
+      <div class="brand">
+        <div class="brand-mark serif" aria-hidden="true">⁂</div>
+        <h1 class="brand-name serif">FAMAS STORE</h1>
+        <p class="brand-slogan serif">черно-белый магазин цифровых ключей</p>
+      </div>
+      <div class="trust mono tiny" id="trustLine" title="нажми, чтобы обновить">
+        <span class="dot" id="trustDot" aria-hidden="true"></span><span id="trustText">загрузка…</span>
+      </div>
+      <div class="facts gl">
+        <div class="frow mono"><span class="fk">ЦЕНА ЗА РЕГИОН</span><span class="lead"></span><span class="fv" id="factPrice">—</span></div>
+        <div class="frow mono"><span class="fk">СРОК КЛЮЧА</span><span class="lead"></span><span class="fv" id="factDays">—</span></div>
+        <div class="frow mono"><span class="fk">ВЫДАЧА</span><span class="lead"></span><span class="fv">МГНОВЕННО</span></div>
+      </div>
+    </header>
+
+    <div class="section-head">
+      <h2 class="mono caps sec"><b>01 /</b> регионы</h2>
+      <div class="chips">
+        <button type="button" class="chip" id="btnAll">✦ Выбрать всё</button>
+        <button type="button" class="chip" id="btnClr">✕ Сброс</button>
+      </div>
+    </div>
+
+    <div class="search" id="searchWrap" hidden>
+      <input type="search" id="searchInput" class="mono" placeholder="поиск региона…" autocomplete="off" spellcheck="false">
+    </div>
+
+    <div class="grid" id="regionGrid" role="group" aria-label="Выбор регионов"></div>
+
+    <div class="grid-note" id="gridNote" hidden>
+      <div class="gn-mark serif" aria-hidden="true">⁂</div>
+      <p class="mono tiny" id="gridNoteText"></p>
+      <button type="button" class="chip" id="btnRetry" hidden>⟳ Повторить</button>
+    </div>
+
+    <footer class="pagefoot mono tiny dim caps">⁂ famas store · @FamasSellerBot</footer>
+  </section>
+
+  <!-- ══════════ 02 · МОИ КЛЮЧИ ══════════ -->
+  <section class="tabpane" id="tab-keys" hidden>
+    <div class="section-head tall">
+      <h2 class="mono caps sec"><b>02 /</b> мои ключи</h2>
+      <button type="button" class="iconbtn" id="btnReloadKeys" aria-label="Обновить список">⟳</button>
+    </div>
+    <div id="keysList" class="keys"></div>
+  </section>
+
+  <!-- ══════════ 03 · ПОМОЩЬ ══════════ -->
+  <section class="tabpane" id="tab-help" hidden>
+    <div class="section-head tall">
+      <h2 class="mono caps sec"><b>03 /</b> помощь</h2>
+    </div>
+
+    <div class="acc" id="acc">
+
+      <div class="acc-item gl open">
+        <button type="button" class="acc-btn" aria-expanded="true">
+          <span class="acc-idx mono">01 /</span>
+          <span class="acc-title">Как купить</span>
+          <span class="acc-x mono" aria-hidden="true">+</span>
+        </button>
+        <div class="acc-panel">
+          <div class="acc-body">
+            <div class="hs"><b class="mono">01</b><span>Отметь нужные регионы во вкладке «МАГАЗИН» — можно сразу несколько.</span></div>
+            <div class="hs"><b class="mono">02</b><span>Нажми «ОПЛАТИТЬ» и подтверди счёт звёздами Telegram.</span></div>
+            <div class="hs"><b class="mono">03</b><span>Ключ мгновенно придёт в чат с ботом и появится во вкладке «МОИ КЛЮЧИ».</span></div>
+            <p class="fine mono tiny">цена: <span id="helpPrice">20</span> зв. за регион · срок: <span id="helpDays">30</span> дн. · одна ссылка на все регионы</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="acc-item gl">
+        <button type="button" class="acc-btn" aria-expanded="false">
+          <span class="acc-idx mono">02 /</span>
+          <span class="acc-title">Как подключить</span>
+          <span class="acc-x mono" aria-hidden="true">+</span>
+        </button>
+        <div class="acc-panel">
+          <div class="acc-body">
+            <p class="acc-lead">Открой страницу ключа — кнопка «ОТКРЫТЬ» во вкладке «МОИ КЛЮЧИ». Там будут QR-код, ссылка и кнопки приложений.</p>
+            <p class="appname mono caps">Happ · iOS / Android</p>
+            <div class="hs"><b class="mono">01</b><span>Установи Happ из стора.</span></div>
+            <div class="hs"><b class="mono">02</b><span>На странице ключа нажми «ОТКРЫТЬ В HAPP» — подписка добавится сама.</span></div>
+            <div class="hs"><b class="mono">03</b><span>Подтверди добавление и жми подключить.</span></div>
+            <p class="appname mono caps">v2rayTun · iOS / Android</p>
+            <div class="hs"><b class="mono">01</b><span>Установи v2rayTun.</span></div>
+            <div class="hs"><b class="mono">02</b><span>Нажми «ОТКРЫТЬ В V2RAYTUN» — импорт пройдёт автоматически.</span></div>
+            <div class="hs"><b class="mono">03</b><span>Выбери сервер и включи VPN.</span></div>
+            <p class="appname mono caps">v2rayNG · Android</p>
+            <div class="hs"><b class="mono">01</b><span>Установи v2rayNG.</span></div>
+            <div class="hs"><b class="mono">02</b><span>Нажми «ОТКРЫТЬ В V2RAYNG».</span></div>
+            <div class="hs"><b class="mono">03</b><span>Обнови подписку (⟳) и подключись.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="acc-item gl">
+        <button type="button" class="acc-btn" aria-expanded="false">
+          <span class="acc-idx mono">03 /</span>
+          <span class="acc-title">Вопросы</span>
+          <span class="acc-x mono" aria-hidden="true">+</span>
+        </button>
+        <div class="acc-panel">
+          <div class="acc-body">
+            <p class="q">— Ссылка одна на все регионы?</p>
+            <p class="a">Да. Внутри подписки — серверы всех купленных стран, переключайся прямо в приложении.</p>
+            <p class="q">— Серверы меняются?</p>
+            <p class="a">Подписка живая: список конфигов обновляется сам, ссылка остаётся прежней.</p>
+            <p class="q">— Сколько действует ключ?</p>
+            <p class="a">Срок указан при покупке и на странице ключа. Дата окончания — во вкладке «МОИ КЛЮЧИ».</p>
+            <p class="q">— Проблема с оплатой?</p>
+            <p class="a">Напиши в поддержку — разберёмся; при сбое вернём звёзды. В боте есть команда /paysupport.</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="help-actions">
+      <button type="button" class="btn secondary big wfull" id="btnSupport">✉︎ НАПИСАТЬ В ПОДДЕРЖКУ</button>
+      <button type="button" class="btn ghost big wfull" id="btnSettings2">⚙︎ НАСТРОЙКИ</button>
+    </div>
+    <p class="fine mono tiny dim center">оплата — звёзды telegram · выдача мгновенная · при сбое оплаты вернём звёзды через поддержку</p>
+  </section>
+
+</main>
+
+<!-- ── липкая панель оплаты (над табами) ── -->
+<div class="paybar gl" id="paybar">
+  <div class="bar-in">
+    <div class="pinfo">
+      <div class="pi-top mono tiny" id="payLine">ВЫБРАНО 0 · ИТОГО 0×20 ⭐</div>
+      <div class="pi-sum mono" id="paySum">0 ⭐</div>
+    </div>
+    <button type="button" class="paybtn" id="payBtn" disabled>
+      <span class="pb-label">ОПЛАТИТЬ ⭐</span>
+      <span class="pb-spin" aria-hidden="true"></span>
+    </button>
+  </div>
+</div>
+
+<!-- ── вкладки ── -->
+<nav class="tabbar gl" id="tabbar">
+  <div class="tabs-in">
+    <span class="tab-ind" id="tabInd" aria-hidden="true"></span>
+    <button type="button" class="tabbtn mono active" data-tab="shop">МАГАЗИН</button>
+    <button type="button" class="tabbtn mono" data-tab="keys">МОИ КЛЮЧИ</button>
+    <button type="button" class="tabbtn mono" data-tab="help">ПОМОЩЬ</button>
+  </div>
+</nav>
+
+<!-- ── экран успеха ── -->
+<div class="ovl" id="ovl" hidden>
+  <div class="ovl-card gl" id="ovlCard">
+    <svg class="ck" viewBox="0 0 72 72" aria-hidden="true">
+      <circle class="ck-ring" cx="36" cy="36" r="33"></circle>
+      <path class="ck-path" d="M22 37.5 32 47.5 51 26.5"></path>
+    </svg>
+    <h2 class="serif ovl-title">ОПЛАЧЕНО</h2>
+    <p class="mono tiny ovl-sub">ключ уже в чате с ботом</p>
+    <button type="button" class="btn accent big wfull" id="btnOpenKey">ОТКРЫТЬ СТРАНИЦУ КЛЮЧА</button>
+    <button type="button" class="btn secondary big wfull" id="btnMyKeys">В МОИ КЛЮЧИ</button>
+    <button type="button" class="btn ghost big wfull" id="btnCloseApp">ЗАКРЫТЬ</button>
+  </div>
+</div>
+
+<!-- ── bottom-sheet настроек ── -->
+<div class="sheet-back" id="sheetBack" hidden></div>
+<div class="sheet gl" id="sheet" role="dialog" aria-modal="true" aria-label="Настройки" hidden>
+  <div class="sheet-handle" aria-hidden="true"></div>
+  <div class="sheet-title mono caps">⚙︎ настройки</div>
+
+  <div class="set-row">
+    <span class="set-label mono tiny caps">тема</span>
+    <div class="seg" id="segTheme">
+      <span class="seg-thumb" id="segThumb" aria-hidden="true"></span>
+      <button type="button" class="seg-btn mono active" data-th="bw">ЧБ</button>
+      <button type="button" class="seg-btn mono" data-th="dracula">DRACULA</button>
+    </div>
+  </div>
+
+  <div class="set-row">
+    <span class="set-label mono tiny caps">жидкое стекло</span>
+    <button type="button" class="switch" id="swGlass" role="switch" aria-checked="false" aria-label="Жидкое стекло"><span class="knob"></span></button>
+  </div>
+
+  <p class="set-prev mono tiny dim caps">превью</p>
+  <div class="region on prev gl" id="prevCard" aria-hidden="true">
+    <span class="flagchip"><img src="/famas/flags/de.svg" alt=""><i class="flag-fb" hidden>🇩🇪</i></span>
+    <span class="r-name">Германия</span>
+    <span class="r-count mono">5 серв.</span>
+    <span class="r-check"><svg viewBox="0 0 12 12"><path d="M2.5 6.5 5 9 9.5 3.5"></path></svg></span>
+  </div>
+</div>
+
+<div class="toast mono" id="toast" hidden></div>
+
+<noscript><div class="noscript mono">включи JavaScript — без него магазин не работает</div></noscript>
+
+<script src="./app.js"></script>
+</body>
+</html>

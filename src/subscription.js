@@ -1,0 +1,77 @@
+'use strict';
+/**
+ * src/subscription.js — сборка живой подписки по заказу (SPEC §6).
+ */
+const config = require('./config');
+const db = require('./db');
+const util = require('./util');
+
+function subUrl(token) {
+  return `${config.PUBLIC_BASE}/s/${token}`;
+}
+
+function pageUrl(token) {
+  return `${config.PUBLIC_BASE}/k/${token}`;
+}
+
+function deepLinks(subUrlStr) {
+  return {
+    happ: 'happ://add/' + subUrlStr,
+    v2raytun: 'v2raytun://import/' + subUrlStr,
+    v2rayng: 'v2rayng://install-sub?url=' + encodeURIComponent(subUrlStr) + '&name=FAMAS%20STORE',
+  };
+}
+
+function safeParseRegions(val) {
+  if (Array.isArray(val)) return val;
+  try {
+    const a = JSON.parse(val);
+    return Array.isArray(a) ? a : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+/** переписать фрагмент uri на брендовый: FAMAS ⁂ <флаг> <СтранаRu> · <Город> */
+function rebrandUri(row) {
+  const ruName = util.COUNTRY_RU[row.country_name] || row.country_name || '';
+  const flag =
+    row.flag || (row.country_iso && row.country_iso !== 'XX' ? util.isoToFlag(row.country_iso) : '');
+  let label = 'FAMAS ⁂';
+  if (flag) label += ' ' + flag;
+  if (ruName) label += ' ' + ruName;
+  if (row.city) label += ' · ' + row.city;
+  const base = String(row.uri).split('#')[0];
+  return base + '#' + encodeURIComponent(label);
+}
+
+/**
+ * buildSub(order) -> { lines, b64, headers, regions, expired }
+ * Контент живой: конфиги берутся из БД на момент запроса.
+ */
+function buildSub(order) {
+  const regions = safeParseRegions(order.regions);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expired = nowSec > Number(order.expires_at || 0);
+
+  let lines = [];
+  if (!expired) {
+    const rows = db.configsForRegions(regions).concat(db.fallbackForRegions(regions));
+    lines = rows.map(rebrandUri);
+  }
+
+  const b64 = util.b64utf8(lines.join('\n'));
+
+  const headers = {
+    'profile-title': 'base64:' + util.b64utf8('⁂ FAMAS STORE'),
+    'profile-update-interval': '1',
+    'subscription-userinfo': `upload=0; download=0; total=0; expire=${Number(order.expires_at || 0)}`,
+    'profile-web-page-url': pageUrl(order.token),
+    'support-url': 'https://t.me/' + config.SUPPORT_USERNAME,
+    'content-disposition': 'attachment; filename=famas.txt',
+  };
+
+  return { lines, b64, headers, regions, expired };
+}
+
+module.exports = { subUrl, pageUrl, deepLinks, buildSub };

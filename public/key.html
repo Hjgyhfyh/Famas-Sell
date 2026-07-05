@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="ru" data-theme="bw">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta name="format-detection" content="telephone=no">
+<meta name="theme-color" content="#000000" id="metaTheme">
+<title>FAMAS STORE ⁂ — страница ключа</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23000'/%3E%3Ctext x='32' y='45' font-family='Georgia,serif' font-size='34' fill='%23fff' text-anchor='middle'%3E%E2%81%82%3C/text%3E%3C/svg%3E">
+<script>
+/* тема и стекло — до первого рендера, без вспышки (ключи те же, что в mini app) */
+(function () {
+  try {
+    var t = localStorage.getItem('famas_theme');
+    if (t === 'dracula' || t === 'bw') document.documentElement.setAttribute('data-theme', t);
+    if (localStorage.getItem('famas_glass') === '1') document.documentElement.setAttribute('data-glass', '1');
+  } catch (e) { /* noop */ }
+})();
+</script>
+<style>
+/* ═══ FAMAS STORE ⁂ · страница ключа · «чёрный конверт, квитанция» ═══
+   дизайн v2 «FAMAS ROUNDED»: темы bw/dracula, жидкое стекло, скругления */
+
+:root {
+  --bg: #000; --bg2: #0a0a0a; --border: #26272b;
+  --text: #fff; --muted: #8a8a8a; --dim: #666;
+  --accent: #fff; --accent2: #fff; --good: #50FA7B;
+  /* квитанция (bw: белая на чёрном — фирменный образ) */
+  --tk-bg: #fff; --tk-text: #000; --tk-mut: #666; --tk-dim: #999;
+  --tk-line: #e5e5e5; --tk-dots: #999; --tk-soft: #f5f5f5;
+  --tk-dot: #000;
+  --app-bg: #000; --app-text: #fff;
+  --copy-bg: #fff; --copy-text: #000; --copy-bd: #000;
+  --qr-c: #000;
+  --tk-glass: rgba(255, 255, 255, .84); --tk-glass-fb: rgba(255, 255, 255, .97);
+  --blob1: rgba(255, 255, 255, .07); --blob2: rgba(255, 255, 255, .05); --blob3: rgba(153, 153, 153, .06);
+  --r-sm: 10px; --r-md: 16px; --r-lg: 22px; --r-xl: 28px;
+  --serif: Georgia, 'Times New Roman', serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+:root[data-theme="dracula"] {
+  --bg: #191A21; --bg2: #21222C; --border: #44475A;
+  --text: #F8F8F2; --muted: #6272A4; --dim: #6272A4;
+  --accent: #BD93F9; --accent2: #FF79C6; --good: #50FA7B;
+  --tk-bg: #282A36; --tk-text: #F8F8F2; --tk-mut: #A6AACB; --tk-dim: #6272A4;
+  --tk-line: #44475A; --tk-dots: #6272A4; --tk-soft: #21222C;
+  --tk-dot: #50FA7B;
+  --app-bg: #353849; --app-text: #F8F8F2;
+  --copy-bg: linear-gradient(135deg, #BD93F9, #FF79C6); --copy-text: #191A21; --copy-bd: transparent;
+  --qr-c: #BD93F9;
+  --tk-glass: rgba(40, 42, 54, .6); --tk-glass-fb: rgba(40, 42, 54, .96);
+  --blob1: rgba(189, 147, 249, .14); --blob2: rgba(255, 121, 198, .12); --blob3: rgba(139, 233, 253, .10);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; background: var(--bg); }
+body {
+  background: var(--bg); color: var(--text);
+  font: 14px/1.5 var(--sans);
+  min-height: 100vh; -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+[hidden] { display: none !important; }
+button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulation; }
+img { display: block; }
+::selection { background: var(--text); color: var(--bg); }
+.mono { font-family: var(--mono); }
+.serif { font-family: var(--serif); }
+body.theming, body.theming * { transition: background-color .25s ease, color .25s ease, border-color .25s ease !important; }
+
+/* блобы стекла */
+.blobs { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; display: none; }
+:root[data-glass="1"] .blobs { display: block; }
+.bl { position: absolute; border-radius: 50%; filter: blur(90px); will-change: transform; }
+.b1 { width: 60vw; height: 60vw; left: -16vw; top: -10vh; background: var(--blob1); animation: dr1 56s ease-in-out infinite alternate; }
+.b2 { width: 52vw; height: 52vw; right: -14vw; top: 34vh; background: var(--blob2); animation: dr2 66s ease-in-out infinite alternate; }
+.b3 { width: 48vw; height: 48vw; left: 20vw; bottom: -16vh; background: var(--blob3); animation: dr3 72s ease-in-out infinite alternate; }
+@keyframes dr1 { to { transform: translate(20vw, 14vh) scale(1.16); } }
+@keyframes dr2 { to { transform: translate(-14vw, -12vh) scale(.88); } }
+@keyframes dr3 { to { transform: translate(8vw, -16vh) scale(1.1); } }
+
+/* шум и рамка-паспарту */
+.noise {
+  position: fixed; inset: 0; z-index: 900; pointer-events: none; opacity: .04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+}
+.frame { position: fixed; inset: 10px; z-index: 5; border: 1px solid var(--border); border-radius: var(--r-lg); pointer-events: none; }
+
+/* сцена */
+.stage { position: relative; z-index: 10; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 34px 18px 16px; }
+.stage-cap { color: var(--dim); font-size: 9px; letter-spacing: .34em; text-transform: uppercase; margin-bottom: 16px; }
+
+/* загрузка / не найдено / ошибка */
+.loading { margin: auto; color: var(--dim); font-size: 10px; letter-spacing: .3em; text-transform: uppercase; animation: blink 1.1s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .25; } }
+.nf { margin: auto; text-align: center; max-width: 340px; padding: 30px 0; }
+.nf-mark { font-family: var(--serif); font-size: 30px; color: var(--muted); }
+.nf h1 { font-family: var(--serif); font-weight: 400; font-size: 24px; letter-spacing: .1em; margin: 16px 0 10px; }
+.nf p { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--dim); line-height: 1.9; }
+.nf .abtn { margin-top: 24px; }
+.abtn {
+  display: inline-block; background: var(--accent); color: var(--bg); text-decoration: none;
+  font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  padding: 14px 26px; border: 0; border-radius: 999px; transition: transform .15s ease;
+}
+.abtn:active { transform: scale(.96); }
+
+/* ── квитанция ── */
+.ticket {
+  position: relative; width: 100%; max-width: 420px;
+  background-color: var(--tk-bg); color: var(--tk-text);
+  border-radius: var(--r-lg); border: 1px solid var(--tk-line);
+  padding: 26px 22px 18px; margin: 0 auto;
+  animation: dropIn .5s cubic-bezier(.22, 1, .36, 1) both;
+}
+@keyframes dropIn {
+  0% { opacity: 0; transform: translateY(-26px) rotate(-1.4deg); }
+  62% { opacity: 1; transform: translateY(4px) rotate(.35deg); }
+  100% { opacity: 1; transform: none; }
+}
+:root[data-glass="1"] .ticket {
+  background-color: var(--tk-glass);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-glass="1"] .ticket { background-color: var(--tk-glass-fb); }
+}
+
+/* компактный переключатель темы на квитанции */
+.thsw { position: absolute; top: 14px; right: 14px; display: flex; gap: 6px; z-index: 3; }
+.thbtn {
+  width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--tk-line);
+  padding: 0; background: none; position: relative; transition: transform .15s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.thbtn:active { transform: scale(.9); }
+.thbtn.bwv { background: linear-gradient(90deg, #000 50%, #fff 50%); }
+.thbtn.drv { background: linear-gradient(135deg, #BD93F9, #FF79C6); }
+.thbtn.glv { background: linear-gradient(135deg, rgba(255, 255, 255, .45), rgba(255, 255, 255, .06)); }
+.thbtn.act { border-color: var(--tk-text); box-shadow: 0 0 0 2px var(--tk-bg), 0 0 0 3px var(--tk-text); }
+
+/* шапка квитанции */
+.t-brand { text-align: center; font-size: 22px; letter-spacing: .05em; padding-top: 4px; }
+.t-brand .mk { color: var(--tk-mut); }
+.t-order { text-align: center; font-size: 11px; letter-spacing: .22em; color: var(--tk-mut); margin-top: 7px; text-transform: uppercase; }
+
+/* перфорация с выемками */
+.perf { position: relative; border-top: 1px dashed var(--tk-dots); margin: 18px -22px; }
+.perf::before, .perf::after {
+  content: ''; position: absolute; top: -8px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--bg); transition: background-color .25s ease;
+}
+.perf::before { left: -8px; }
+.perf::after { right: -8px; }
+
+/* статус */
+.t-status {
+  text-align: center; font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.st-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tk-dot); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
+.t-status.off { color: var(--tk-dim); }
+.dead-note { text-align: center; font-family: var(--mono); font-size: 9px; letter-spacing: .14em; color: var(--tk-dim); margin-top: 8px; text-transform: uppercase; }
+.buywrap { text-align: center; margin-top: 12px; }
+.buybtn {
+  display: inline-block; background: var(--app-bg); color: var(--app-text); text-decoration: none;
+  font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+  padding: 12px 24px; border-radius: 999px;
+}
+.dead .t-qr, .dead .t-link, .dead .t-apps { opacity: .3; pointer-events: none; }
+
+/* заголовки секций квитанции */
+.cap {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 9px; letter-spacing: .24em; color: var(--tk-dim);
+  text-transform: uppercase; margin-bottom: 10px;
+}
+.cap::after { content: ''; flex: 1; border-top: 1px solid var(--tk-line); }
+.cap b { color: var(--tk-text); font-weight: 400; }
+
+/* регионы: dotted leaders */
+.rrow { display: flex; align-items: center; gap: 9px; padding: 6px 0; font-size: 13px; }
+.rname { font-weight: 600; letter-spacing: .01em; }
+.lead { flex: 1; border-bottom: 1px dotted var(--tk-dots); transform: translateY(-3px); }
+.rcount { font-family: var(--mono); font-size: 11px; color: var(--tk-mut); letter-spacing: .06em; white-space: nowrap; }
+.rrow.total { border-top: 1px solid var(--tk-line); margin-top: 6px; padding-top: 10px; }
+.rrow.total .rname { font-family: var(--mono); font-size: 10px; letter-spacing: .18em; font-weight: 400; color: var(--tk-mut); }
+.rrow.total .rcount { color: var(--tk-text); font-weight: 700; }
+
+/* флаг-чип (svg 4:3 + эмодзи-фолбэк) */
+.flagchip {
+  position: relative; width: 30px; height: 23px; border-radius: 6px; overflow: hidden; flex: none;
+  border: 1px solid var(--tk-line); background: var(--tk-soft);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .25);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.flagchip img { width: 100%; height: 100%; object-fit: cover; }
+.flagchip::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2), inset 0 -1px 2px rgba(0, 0, 0, .2); pointer-events: none; }
+.flag-fb { font-style: normal; font-size: 14px; line-height: 1; }
+
+/* QR: белый квадрат со скруглёнными уголками-скобками */
+.t-qr { text-align: center; padding: 4px 0 2px; }
+.qrwrap { position: relative; display: inline-block; padding: 13px; }
+.qrbox { position: relative; background: #fff; border: 1px solid var(--tk-line); border-radius: var(--r-md); padding: 12px; }
+.qrbox img { width: 176px; height: 176px; opacity: 0; transform: scale(.96); transition: opacity .4s ease, transform .4s ease; }
+.qrbox img.ld { opacity: 1; transform: none; }
+.qrwrap i { position: absolute; width: 16px; height: 16px; border: 2px solid var(--qr-c); }
+.qrwrap .c1 { left: 0; top: 0; border-right: 0; border-bottom: 0; border-radius: 8px 0 0 0; }
+.qrwrap .c2 { right: 0; top: 0; border-left: 0; border-bottom: 0; border-radius: 0 8px 0 0; }
+.qrwrap .c3 { left: 0; bottom: 0; border-right: 0; border-top: 0; border-radius: 0 0 0 8px; }
+.qrwrap .c4 { right: 0; bottom: 0; border-left: 0; border-top: 0; border-radius: 0 0 8px 0; }
+.qrcap { font-family: var(--mono); font-size: 9px; letter-spacing: .3em; color: var(--tk-dim); text-transform: uppercase; margin-top: 8px; }
+
+/* ссылка-подписка */
+.linkbox {
+  background: var(--tk-soft); border: 1px solid var(--tk-line); border-radius: var(--r-sm);
+  font-family: var(--mono); font-size: 11px; line-height: 1.65; word-break: break-all;
+  color: var(--tk-text); padding: 12px 13px; cursor: pointer;
+}
+.copybtn {
+  position: relative; overflow: hidden; width: 100%; margin-top: 9px;
+  background: var(--copy-bg); color: var(--copy-text); border: 1px solid var(--copy-bd); border-radius: 999px;
+  font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase;
+  padding: 15px 12px; transition: transform .15s ease;
+}
+.copybtn:active { transform: scale(.97); }
+.copybtn .cb { position: relative; display: block; transition: opacity .18s ease, transform .18s ease; }
+.copybtn .cb-b { position: absolute; inset: 0; opacity: 0; transform: translateY(8px); }
+.copybtn.copied .cb-a { opacity: 0; transform: translateY(-8px); }
+.copybtn.copied .cb-b { opacity: 1; transform: none; }
+.ripple {
+  position: absolute; border-radius: 50%; pointer-events: none;
+  background: rgba(0, 0, 0, .18); transform: scale(0); opacity: .8;
+  animation: rip .55s ease-out forwards;
+}
+:root[data-theme="dracula"] .ripple { background: rgba(255, 255, 255, .35); }
+@keyframes rip { to { transform: scale(3); opacity: 0; } }
+
+/* кнопки приложений */
+.appbtn {
+  display: block; text-align: center; text-decoration: none;
+  background: var(--app-bg); color: var(--app-text);
+  font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  padding: 15px 12px; border-radius: var(--r-sm); margin-top: 10px;
+  transition: transform .15s ease, opacity .15s ease;
+}
+.appbtn:active { transform: scale(.97); opacity: .85; }
+.storeline { font-family: var(--mono); font-size: 9.5px; letter-spacing: .05em; color: var(--tk-dim); text-align: center; margin-top: 5px; }
+.storeline a { color: var(--tk-mut); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
+
+/* инструкция-раскрывашка */
+.howto { border-top: 1px solid var(--tk-line); margin-top: 16px; }
+.howto-btn {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: none; border: 0; padding: 14px 2px; text-align: left;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em; color: var(--tk-text); text-transform: uppercase;
+}
+.hx { font-size: 15px; color: var(--tk-dim); transition: transform .2s ease; flex: none; }
+.howto.open .hx { transform: rotate(45deg); }
+.howto-panel { max-height: 0; overflow: hidden; transition: max-height .3s cubic-bezier(.22, 1, .36, 1); }
+.howto.open .howto-panel { max-height: 520px; }
+.howto-body { padding: 0 2px 14px; font-size: 12px; line-height: 1.7; color: var(--tk-mut); }
+.hs { display: flex; gap: 10px; margin: 8px 0; }
+.hs b { font-family: var(--mono); font-size: 9px; line-height: 2.3; color: var(--tk-text); letter-spacing: .1em; font-weight: 400; white-space: nowrap; }
+
+/* штрих-код и хвост */
+.barcode {
+  height: 36px; margin: 16px 0 8px; border-radius: 3px;
+  background: repeating-linear-gradient(90deg,
+    var(--tk-text) 0 2px, transparent 2px 5px,
+    var(--tk-text) 5px 6px, transparent 6px 8px,
+    var(--tk-text) 8px 11px, transparent 11px 13px,
+    var(--tk-text) 13px 14px, transparent 14px 18px);
+  opacity: .9;
+}
+.t-tail { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 9px; letter-spacing: .18em; color: var(--tk-dim); text-transform: uppercase; }
+
+/* футер страницы */
+.foot { margin-top: 24px; padding-bottom: 10px; text-align: center; font-family: var(--mono); font-size: 9px; letter-spacing: .2em; color: var(--dim); text-transform: uppercase; line-height: 2; }
+.foot a { color: var(--muted); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
+
+/* тост */
+.toast {
+  position: fixed; left: 50%; bottom: 28px; z-index: 950;
+  transform: translateX(-50%) translateY(10px);
+  background: var(--text); color: var(--bg); border-radius: 999px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  padding: 11px 20px; white-space: nowrap; opacity: 0;
+  transition: opacity .22s ease, transform .22s ease; pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateX(-50%); }
+
+@media (prefers-reduced-motion: reduce) {
+  .bl, .st-dot, .loading { animation: none !important; }
+  .ticket { animation-duration: 0s !important; }
+  *, *::before, *::after { transition-duration: .01s !important; }
+}
+
+/* ── печать: белый фон, только суть ── */
+@media print {
+  body { background: #fff !important; color: #000 !important; }
+  .noise, .frame, .blobs, .foot, .toast, .thsw, .t-apps, .copybtn, .howto, .buywrap, .stage-cap { display: none !important; }
+  .stage { padding: 0; min-height: 0; }
+  .ticket {
+    animation: none !important; border: 1px solid #999; border-radius: 0;
+    background: #fff !important; color: #000 !important; max-width: 100%;
+  }
+  .perf::before, .perf::after { background: #fff !important; }
+  .qrbox img { opacity: 1 !important; transform: none !important; }
+  .linkbox { background: #fff; border: 1px dashed #999; color: #000; }
+  .barcode { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<div class="blobs" aria-hidden="true"><i class="bl b1"></i><i class="bl b2"></i><i class="bl b3"></i></div>
+<div class="noise" aria-hidden="true"></div>
+<div class="frame" aria-hidden="true"></div>
+
+<main class="stage">
+  <div class="stage-cap mono">famas store — цифровая квитанция</div>
+
+  <!-- загрузка -->
+  <div class="loading mono" id="loading">— загрузка —</div>
+
+  <!-- ключ не найден -->
+  <div class="nf" id="notfound" hidden>
+    <div class="nf-mark">⁂</div>
+    <h1>КЛЮЧ НЕ НАЙДЕН</h1>
+    <p>проверь ссылку — или возьми новый ключ в магазине</p>
+    <a class="abtn" href="https://t.me/FamasSellerBot">ОТКРЫТЬ МАГАЗИН</a>
+  </div>
+
+  <!-- ошибка сети -->
+  <div class="nf" id="loaderr" hidden>
+    <div class="nf-mark">⁂</div>
+    <h1>НЕ ПОЛУЧИЛОСЬ</h1>
+    <p>сеть шалит — не удалось загрузить квитанцию</p>
+    <button type="button" class="abtn" id="btnReload">⟳ ОБНОВИТЬ</button>
+  </div>
+
+  <!-- квитанция -->
+  <article class="ticket" id="ticket" hidden>
+    <div class="thsw" id="thsw" aria-label="Тема">
+      <button type="button" class="thbtn bwv" id="thBw" aria-label="Тема: чёрно-белая"></button>
+      <button type="button" class="thbtn drv" id="thDr" aria-label="Тема: dracula"></button>
+      <button type="button" class="thbtn glv" id="thGl" aria-label="Жидкое стекло"></button>
+    </div>
+
+    <header>
+      <div class="t-brand serif">FAMAS STORE <span class="mk">⁂</span></div>
+      <div class="t-order mono" id="orderNo">ЗАКАЗ № ——————</div>
+    </header>
+
+    <div class="perf" aria-hidden="true"></div>
+
+    <div class="t-status mono" id="statusRow"></div>
+    <p class="dead-note" id="deadNote" hidden>ключ истёк — подписка пуста</p>
+    <div class="buywrap" id="buyNewWrap" hidden>
+      <a class="buybtn mono" href="https://t.me/FamasSellerBot">КУПИТЬ НОВЫЙ</a>
+    </div>
+
+    <div class="perf" aria-hidden="true"></div>
+
+    <section>
+      <div class="cap"><b>01 /</b> регионы</div>
+      <div id="regionRows"></div>
+    </section>
+
+    <div class="perf" aria-hidden="true"></div>
+
+    <section class="t-qr">
+      <div class="cap"><b>02 /</b> qr</div>
+      <div class="qrwrap">
+        <i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i>
+        <div class="qrbox"><img id="qrImg" alt="QR-код подписки" width="176" height="176"></div>
+      </div>
+      <div class="qrcap">сканируй из приложения</div>
+    </section>
+
+    <div class="perf" aria-hidden="true"></div>
+
+    <section class="t-link">
+      <div class="cap"><b>03 /</b> ссылка-подписка · одна на всё</div>
+      <div class="linkbox mono" id="subBox" title="нажми — скопируется"></div>
+      <button type="button" class="copybtn" id="copyBtn">
+        <span class="cb cb-a">⧉ КОПИРОВАТЬ</span>
+        <span class="cb cb-b">СКОПИРОВАНО ✓</span>
+      </button>
+    </section>
+
+    <div class="perf" aria-hidden="true"></div>
+
+    <section class="t-apps">
+      <div class="cap"><b>04 /</b> приложения</div>
+      <a class="appbtn" id="btnHapp" href="#" rel="noopener">▸ ОТКРЫТЬ В HAPP</a>
+      <div class="storeline" id="storeHapp"></div>
+      <a class="appbtn" id="btnTun" href="#" rel="noopener">▸ ОТКРЫТЬ В V2RAYTUN</a>
+      <div class="storeline" id="storeTun"></div>
+      <a class="appbtn" id="btnNg" href="#" rel="noopener">▸ ОТКРЫТЬ В V2RAYNG</a>
+      <div class="storeline" id="storeNg"></div>
+    </section>
+
+    <div class="howto" id="howto">
+      <button type="button" class="howto-btn" id="howtoBtn" aria-expanded="false">
+        <span>01 УСТАНОВИ · 02 НАЖМИ КНОПКУ · 03 ПОДКЛЮЧИСЬ</span>
+        <span class="hx" aria-hidden="true">+</span>
+      </button>
+      <div class="howto-panel">
+        <div class="howto-body">
+          <div class="hs"><b>01</b><span>Поставь одно из приложений: Happ, v2rayTun или v2rayNG — ссылки на сторы под кнопками выше.</span></div>
+          <div class="hs"><b>02</b><span>Вернись сюда и нажми «ОТКРЫТЬ В …» — подписка добавится сама. Либо скопируй ссылку и вставь в приложении («добавить из буфера»), либо сканируй QR.</span></div>
+          <div class="hs"><b>03</b><span>Выбери сервер и жми подключить. Серверы внутри подписки обновляются сами — ссылка одна навсегда.</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="barcode" aria-hidden="true"></div>
+    <div class="t-tail"><span id="tailNo">№ ——————</span><span id="tailDate">—</span></div>
+  </article>
+
+  <footer class="foot">
+    ⁂ famas store · <a href="https://t.me/FamasSellerBot" rel="noopener">@FamasSellerBot</a> · поддержка <a href="https://t.me/sigmatik323" rel="noopener">@sigmatik323</a>
+  </footer>
+</main>
+
+<div class="toast mono" id="toast" hidden></div>
+
+<script>
+(function () {
+  'use strict';
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+  function toMs(u) { u = Number(u) || 0; return u > 1e12 ? u : u * 1000; }
+  function fmtDate(u) {
+    if (!u) return '—';
+    var d = new Date(toMs(u));
+    var p = function (n) { return String(n).padStart(2, '0'); };
+    return p(d.getDate()) + '.' + p(d.getMonth() + 1) + '.' + d.getFullYear();
+  }
+  function pad6(n) { n = String(n === null || n === undefined ? '' : n); while (n.length < 6) n = '0' + n; return n; }
+  function isoFlag(iso) {
+    try {
+      iso = String(iso || '').toUpperCase();
+      if (!/^[A-Z]{2}$/.test(iso)) return '⁂';
+      return String.fromCodePoint(0x1F1E6 + iso.charCodeAt(0) - 65, 0x1F1E6 + iso.charCodeAt(1) - 65);
+    } catch (e) { return '⁂'; }
+  }
+
+  /* ── темы (те же ключи localStorage, что и в mini app) ── */
+  var THEME_KEY = 'famas_theme', GLASS_KEY = 'famas_glass';
+  var THEME_BG = { bw: '#000000', dracula: '#191A21' };
+  var themingTimer = null;
+  function crossfade() {
+    document.body.classList.add('theming');
+    clearTimeout(themingTimer);
+    themingTimer = setTimeout(function () { document.body.classList.remove('theming'); }, 280);
+  }
+  function getTheme() { return document.documentElement.getAttribute('data-theme') === 'dracula' ? 'dracula' : 'bw'; }
+  function getGlass() { return document.documentElement.getAttribute('data-glass') === '1'; }
+  function syncSw() {
+    $('thBw').classList.toggle('act', getTheme() === 'bw');
+    $('thDr').classList.toggle('act', getTheme() === 'dracula');
+    $('thGl').classList.toggle('act', getGlass());
+    var meta = $('metaTheme');
+    if (meta) meta.setAttribute('content', THEME_BG[getTheme()]);
+  }
+  function setTheme(t) {
+    crossfade();
+    document.documentElement.setAttribute('data-theme', t);
+    try { localStorage.setItem(THEME_KEY, t); } catch (e) { /* noop */ }
+    syncSw();
+  }
+  function toggleGlass() {
+    crossfade();
+    var on = !getGlass();
+    if (on) document.documentElement.setAttribute('data-glass', '1');
+    else document.documentElement.removeAttribute('data-glass');
+    try { localStorage.setItem(GLASS_KEY, on ? '1' : '0'); } catch (e) { /* noop */ }
+    syncSw();
+  }
+  $('thBw').addEventListener('click', function () { setTheme('bw'); });
+  $('thDr').addEventListener('click', function () { setTheme('dracula'); });
+  $('thGl').addEventListener('click', toggleGlass);
+  syncSw();
+
+  /* ── тосты ── */
+  var toastTimer = null;
+  function toast(msg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.hidden = false;
+    requestAnimationFrame(function () { t.classList.add('show'); });
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      t.classList.remove('show');
+      setTimeout(function () { t.hidden = true; }, 240);
+    }, 1800);
+  }
+
+  /* ── копирование с фолбэком + морф кнопки + рипл ── */
+  var copiedTimer = null;
+  function markCopied() {
+    var b = $('copyBtn');
+    b.classList.add('copied');
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(function () { b.classList.remove('copied'); }, 1500);
+    toast('скопировано');
+  }
+  function copyText(text) {
+    function legacy() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) markCopied(); else toast('не удалось скопировать');
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(markCopied, legacy);
+    } else legacy();
+  }
+  function ripple(ev, btn) {
+    try {
+      var r = btn.getBoundingClientRect();
+      var d = Math.max(r.width, r.height);
+      var x = (ev.clientX || (r.left + r.width / 2)) - r.left - d / 2;
+      var y = (ev.clientY || (r.top + r.height / 2)) - r.top - d / 2;
+      var s = document.createElement('span');
+      s.className = 'ripple';
+      s.style.width = d + 'px';
+      s.style.height = d + 'px';
+      s.style.left = x + 'px';
+      s.style.top = y + 'px';
+      btn.appendChild(s);
+      setTimeout(function () { if (s.parentNode) s.parentNode.removeChild(s); }, 600);
+    } catch (e) { /* noop */ }
+  }
+
+  /* эмодзи-фолбэк для svg-флагов (error не всплывает — capture) */
+  document.addEventListener('error', function (ev) {
+    var img = ev.target;
+    if (img && img.tagName === 'IMG' && img.parentNode &&
+        img.parentNode.classList && img.parentNode.classList.contains('flagchip')) {
+      img.hidden = true;
+      var fb = img.parentNode.querySelector('.flag-fb');
+      if (fb) fb.hidden = false;
+    }
+  }, true);
+
+  /* ── сторы: iOS первым на iOS ── */
+  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var STORES = {
+    happ: [
+      { n: 'App Store', u: 'https://apps.apple.com/app/id6504287215', ios: true },
+      { n: 'Google Play', u: 'https://play.google.com/store/apps/details?id=com.happproxy', ios: false }
+    ],
+    v2raytun: [
+      { n: 'App Store', u: 'https://apps.apple.com/app/id6476628951', ios: true },
+      { n: 'Google Play', u: 'https://play.google.com/store/apps/details?id=com.v2raytun.android', ios: false }
+    ],
+    v2rayng: [
+      { n: 'Google Play', u: 'https://play.google.com/store/apps/details?id=com.v2ray.ang', ios: false }
+    ]
+  };
+  function storeLine(key) {
+    var list = STORES[key].slice();
+    list.sort(function (a, b) {
+      var av = a.ios ? 1 : 0, bv = b.ios ? 1 : 0;
+      return isIOS ? (bv - av) : (av - bv);
+    });
+    var links = [];
+    for (var i = 0; i < list.length; i++) {
+      links.push('<a href="' + list[i].u + '" target="_blank" rel="noopener noreferrer">' + list[i].n + '</a>');
+    }
+    return 'нет приложения? скачать: ' + links.join(' · ');
+  }
+
+  /* ── экраны ── */
+  function show(id) {
+    var ids = ['loading', 'notfound', 'loaderr', 'ticket'];
+    for (var i = 0; i < ids.length; i++) $(ids[i]).hidden = ids[i] !== id;
+  }
+  $('btnReload').addEventListener('click', function () { location.reload(); });
+
+  /* ── рендер квитанции ── */
+  function setApp(id, url) {
+    var a = $(id);
+    if (url) a.setAttribute('href', url);
+    else a.hidden = true;
+  }
+
+  function render(d) {
+    $('orderNo').textContent = 'ЗАКАЗ № ' + pad6(d.orderId);
+    $('tailNo').textContent = '№ ' + pad6(d.orderId);
+    $('tailDate').textContent = fmtDate(d.createdAt);
+
+    var stat = $('statusRow');
+    if (d.active) {
+      stat.innerHTML = '<span class="st-dot"></span><span>АКТИВЕН · до ' + esc(fmtDate(d.expiresAt)) +
+        (d.status === 'gift' ? ' · подарок' : '') + '</span>';
+    } else {
+      stat.classList.add('off');
+      stat.innerHTML = '<span>○ ИСТЁК · ' + esc(fmtDate(d.expiresAt)) + '</span>';
+      $('deadNote').hidden = false;
+      $('buyNewWrap').hidden = false;
+      $('ticket').classList.add('dead');
+    }
+
+    var rows = '';
+    var regs = d.regions || [];
+    for (var i = 0; i < regs.length; i++) {
+      var r = regs[i];
+      var lo = String(r.iso || 'xx').toLowerCase();
+      rows +=
+        '<div class="rrow">' +
+          '<span class="flagchip"><img src="/famas/flags/' + esc(lo) + '.svg" alt=""><i class="flag-fb" hidden>' + esc(r.flag || isoFlag(r.iso)) + '</i></span>' +
+          '<span class="rname">' + esc(r.nameRu || r.iso) + '</span>' +
+          '<span class="lead"></span>' +
+          '<span class="rcount">' + (Number(r.count) || 0) + ' серв.</span>' +
+        '</div>';
+    }
+    if (!regs.length) rows += '<div class="rrow"><span class="rname">—</span><span class="lead"></span><span class="rcount">пусто</span></div>';
+    rows += '<div class="rrow total"><span class="rname">ВСЕГО СЕРВЕРОВ</span><span class="lead"></span><span class="rcount">' + (Number(d.servers) || 0) + '</span></div>';
+    $('regionRows').innerHTML = rows;
+
+    var qr = $('qrImg');
+    qr.addEventListener('load', function () { qr.classList.add('ld'); });
+    qr.addEventListener('error', function () { qr.closest('.t-qr').style.display = 'none'; });
+    qr.src = '/famas/qr/' + encodeURIComponent(token) + '.svg';
+
+    var sub = d.sub || '';
+    $('subBox').textContent = sub;
+    $('subBox').addEventListener('click', function () { copyText(sub); });
+    $('copyBtn').addEventListener('click', function (ev) { ripple(ev, this); copyText(sub); });
+
+    var L = d.links || {};
+    setApp('btnHapp', L.happ);
+    setApp('btnTun', L.v2raytun);
+    setApp('btnNg', L.v2rayng);
+    $('storeHapp').innerHTML = storeLine('happ');
+    $('storeTun').innerHTML = storeLine('v2raytun');
+    $('storeNg').innerHTML = storeLine('v2rayng');
+
+    show('ticket');
+  }
+
+  /* раскрывашка */
+  $('howtoBtn').addEventListener('click', function () {
+    var open = $('howto').classList.toggle('open');
+    this.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+
+  /* ── загрузка ключа: /famas/k/<token> → /famas/api/key/<token> ── */
+  var m = location.pathname.match(/\/k\/([A-Za-z0-9_-]+)\/?$/);
+  var token = m ? m[1] : '';
+
+  if (!token) {
+    show('notfound');
+  } else {
+    fetch('/famas/api/key/' + encodeURIComponent(token))
+      .then(function (r) {
+        if (r.status === 404) { var e = new Error('nf'); e.nf = true; throw e; }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        if (!d || !d.ok) { var e = new Error('nf'); e.nf = true; throw e; }
+        render(d);
+      })
+      .catch(function (e) {
+        if (e && e.nf) show('notfound');
+        else show('loaderr');
+      });
+  }
+})();
+</script>
+</body>
+</html>

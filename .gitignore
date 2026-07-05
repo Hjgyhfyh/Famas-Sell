@@ -1,6 +1,18 @@
+# зависимости
 node_modules/
+
+# секреты
 .env
+
+# данные и БД
 data/
 *.db
-*.db-*
+*.db-shm
+*.db-wal
+*.db-journal
+
+# логи и мусор
 *.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
