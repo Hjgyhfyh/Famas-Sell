@@ -1,0 +1,10 @@
+[Unit]
+Description=Famas Store — авто-обновление из GitHub (правки коллег)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntuuser
+WorkingDirectory=/home/ubuntuuser/famas-shop
+ExecStart=/usr/bin/env bash /home/ubuntuuser/famas-shop/deploy/autopull.sh

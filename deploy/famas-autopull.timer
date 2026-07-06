@@ -1,0 +1,11 @@
+[Unit]
+Description=Famas Store auto-pull каждые 3 минуты
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=180s
+AccuracySec=15s
+Unit=famas-autopull.service
+
+[Install]
+WantedBy=timers.target
