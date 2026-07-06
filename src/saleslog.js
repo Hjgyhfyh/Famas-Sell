@@ -74,10 +74,10 @@ function enabled() {
   return channelId() !== null;
 }
 
-/** TTL самоудаляемого сообщения, минут (динамически из config; некорректное → 5). */
+/** TTL самоудаляемого сообщения, минут (динамически из config; некорректное → 60, SPEC-LOG §7b). */
 function ttlMinutes() {
   const n = Number(config.SALE_LOG_TTL_MIN);
-  return Number.isFinite(n) && n > 0 ? n : 5;
+  return Number.isFinite(n) && n > 0 ? n : 60;
 }
 
 /** Общие опции сообщений канала (SPEC-LOG §3/§4): HTML, без превью ссылок. */
@@ -347,19 +347,11 @@ async function logSale(api, order, kind) {
       console.error('[saleslog] logSale send:', errText(e));
     }
 
-    // Самоудаление через SALE_LOG_TTL_MIN минут; таймер .unref() — не держим процесс.
-    // Переживание рестарта не требуется (edge SPEC-LOG §4 — приемлемо).
+    // Самоудаление через SALE_LOG_TTL_MIN минут — ПЕРСИСТЕНТНО (SPEC-LOG §7b):
+    // ставим в очередь sale_log_msgs, удаляет свипер (startSweeper). Переживает рестарт бота.
     if (sent && sent.message_id != null) {
-      const msgId = sent.message_id;
-      const timer = setTimeout(() => {
-        try {
-          const p = api.deleteMessage(chat, msgId);
-          if (p && typeof p.catch === 'function') p.catch(() => {});
-        } catch (e) {
-          /* удаление не критично */
-        }
-      }, ttlMinutes() * 60000);
-      if (timer && typeof timer.unref === 'function') timer.unref();
+      const deleteAt = Math.floor(Date.now() / 1000) + ttlMinutes() * 60;
+      db.addSaleMsg(sent.message_id, String(chat), deleteAt);
     }
 
     await updateStats(api);
@@ -368,4 +360,75 @@ async function logSale(api, order, kind) {
   }
 }
 
-module.exports = { enabled, ensureStats, updateStats, logSale };
+/* ── персистентный свипер самоудаления (SPEC-LOG §7b) ──────────────
+ * За час бот может рестартнуться (деплой/автопул) — setTimeout не переживёт.
+ * Поэтому сообщения о покупке кладутся в БД (db.addSaleMsg) и удаляются свипером,
+ * который переживает рестарт: при старте прогоняется немедленно + раз в минуту. */
+
+let sweeperTimer = null;
+
+/**
+ * Один тик свипера: удалить все просроченные сообщения о покупке.
+ * Успех ИЛИ «сообщение не найдено» → вычищаем из очереди (чтобы не копилось);
+ * прочие ошибки — оставляем в очереди на следующий тик. Наружу не бросает.
+ */
+async function sweep(api) {
+  if (!enabled() || !api) return;
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const rows = db.dueSaleMsgs(nowSec) || [];
+    for (const row of rows) {
+      const id = Number(row && row.message_id);
+      if (!Number.isFinite(id) || id <= 0) {
+        db.removeSaleMsg(row && row.message_id);
+        continue;
+      }
+      const chat =
+        row && row.chat_id != null && String(row.chat_id) !== '' ? row.chat_id : channelId();
+      try {
+        await api.deleteMessage(chat, id);
+        db.removeSaleMsg(id); // удалено — убираем из очереди
+      } catch (e) {
+        if (isMissing(e)) {
+          db.removeSaleMsg(id); // сообщения уже нет — тоже убираем
+        } else {
+          console.error('[saleslog] sweep delete:', errText(e)); // прочее — оставим на след. тик
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[saleslog] sweep:', errText(e));
+  }
+}
+
+/**
+ * Запустить персистентный свипер (SPEC-LOG §7b): немедленный прогон +
+ * setInterval(60000).unref(). Интервал не запускается дважды (храним ссылку).
+ * При !enabled() — no-op. Fire-and-forget, наружу не бросает.
+ */
+function startSweeper(api) {
+  if (!enabled() || !api) return;
+  // (1) немедленный прогон
+  try {
+    const p = sweep(api);
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  } catch (e) {
+    /* sweep сам глотает — подстраховка */
+  }
+  // (2) периодический тик — ровно один раз на процесс
+  if (!sweeperTimer) {
+    sweeperTimer = setInterval(() => {
+      try {
+        const p = sweep(api);
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (e) {
+        /* подстраховка */
+      }
+    }, 60000);
+    if (sweeperTimer && typeof sweeperTimer.unref === 'function') sweeperTimer.unref();
+  }
+}
+
+// startSweeper — публичный запуск свипера (index.js). sweep/ttlMinutes экспортируются
+// дополнительно для детерминированных проверок E2E-гейта (чистое ДОБАВЛЕНИЕ, поведение не меняют).
+module.exports = { enabled, ensureStats, updateStats, logSale, startSweeper, sweep, ttlMinutes };

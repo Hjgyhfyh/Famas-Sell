@@ -71,6 +71,9 @@ async function main() {
           // onStart => bot.init() уже прошёл, bot.api готов. Fire-and-forget, ошибки глотаем —
           // канал не должен влиять на работу бота. При выключенной фиче — no-op.
           saleslog.ensureStats(bot.api).catch(() => {});
+          // SPEC-LOG §7b: персистентный свипер самоудаления сообщений о покупке
+          // (переживает рестарт бота). Fire-and-forget, всё внутри в try/catch. При выкл. фиче — no-op.
+          saleslog.startSweeper(bot.api);
         },
       })
       .catch((e) => logErr('Бот: polling завершился с ошибкой:', (e && e.message) || e));

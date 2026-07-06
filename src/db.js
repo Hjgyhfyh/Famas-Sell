@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS orders(
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, type TEXT, data TEXT);
+CREATE TABLE IF NOT EXISTS sale_log_msgs(
+  message_id INTEGER PRIMARY KEY, chat_id TEXT, delete_at INTEGER);
 `;
 
 let db = null;
@@ -659,6 +661,44 @@ function logEvent(type, dataObj) {
   }
 }
 
+/* ─── персистентная очередь самоудаления сообщений о покупке (SPEC-LOG §7b) ─── */
+
+/**
+ * Поставить сообщение о покупке в очередь удаления (переживает рестарт бота).
+ * message_id — PRIMARY KEY (upsert по нему); chat_id — TEXT; delete_at — unix-секунды.
+ * Всё в try/catch: очередь никогда не роняет оплату/выдачу/логирование.
+ */
+function addSaleMsg(messageId, chatId, deleteAt) {
+  try {
+    stmt(
+      `INSERT INTO sale_log_msgs(message_id, chat_id, delete_at) VALUES(?,?,?)
+       ON CONFLICT(message_id) DO UPDATE SET chat_id=excluded.chat_id, delete_at=excluded.delete_at`
+    ).run(Number(messageId), String(chatId), Math.floor(Number(deleteAt) || 0));
+  } catch (e) {
+    // не критично — сообщение просто не попадёт в очередь удаления
+  }
+}
+
+/** Сообщения, у которых срок вышел (delete_at <= nowSec). Пустой массив при сбое. */
+function dueSaleMsgs(nowSec) {
+  try {
+    return stmt(
+      'SELECT message_id, chat_id, delete_at FROM sale_log_msgs WHERE delete_at <= ? ORDER BY delete_at ASC'
+    ).all(Math.floor(Number(nowSec) || 0));
+  } catch (e) {
+    return [];
+  }
+}
+
+/** Убрать сообщение из очереди удаления (после успешного delete или not-found). */
+function removeSaleMsg(messageId) {
+  try {
+    stmt('DELETE FROM sale_log_msgs WHERE message_id=?').run(Number(messageId));
+  } catch (e) {
+    // не критично
+  }
+}
+
 module.exports = {
   init,
   get db() {
@@ -695,4 +735,7 @@ module.exports = {
   ordersOfUser,
   statsSummary,
   logEvent,
+  addSaleMsg,
+  dueSaleMsgs,
+  removeSaleMsg,
 };

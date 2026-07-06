@@ -110,6 +110,28 @@ async logSale(api, order, kind)         // kind: 'paid' | 'free' — пост о
 3. Формат статистики отражает statsSummary (создать пару gift/paid заказов, проверить N/выручку).
 4. Убрать тестовые БД. JSON-отчёт.
 
+## 7b. TTL 60 мин + ПЕРСИСТЕНТНОЕ удаление (переживает рестарт) — ОБЯЗАТЕЛЬНО
+
+`SALE_LOG_TTL_MIN` дефолт = **60** (config.js + .env.example; `ttlMinutes()` фолбэк тоже 60).
+За час бот может рестартнуться (деплой/автопул) — `setTimeout` не переживёт, сообщение зависнет
+навсегда. Поэтому удаление — через персистентный свипер:
+- db.js (миграция, идемпотентно): `CREATE TABLE IF NOT EXISTS sale_log_msgs(message_id INTEGER
+  PRIMARY KEY, chat_id TEXT, delete_at INTEGER)`. Экспорты: `addSaleMsg(messageId, chatId, deleteAt)`,
+  `dueSaleMsgs(nowSec) -> rows (delete_at<=now)`, `removeSaleMsg(messageId)`. Всё в try/catch.
+- saleslog.js `logSale`: вместо `setTimeout` — `db.addSaleMsg(msgId, String(chat), nowSec + ttl*60)`
+  (nowSec = Math.floor(Date.now()/1000)). Никаких per-message setTimeout.
+- saleslog.js новый экспорт `startSweeper(api)`: (1) один немедленный `sweep(api)`; (2)
+  `setInterval(()=>sweep(api), 60000)` с `.unref()`; хранить ссылку, не запускать интервал повторно.
+  `sweep(api)`: для каждой `db.dueSaleMsgs(now)` — `api.deleteMessage(chatId, message_id)`;
+  при успехе ИЛИ ошибке «message to delete not found»/«message not found» → `db.removeSaleMsg(id)`
+  (просроченное убираем из очереди в любом случае, чтобы не копилось); прочие ошибки — оставить на
+  следующий тик, залогировать. Всё в try/catch, наружу не бросать, при !enabled() — no-op.
+- index.js: рядом с `ensureStats(bot.api)` вызвать `saleslog.startSweeper(bot.api)` (fire-and-forget).
+- Тест выживания рестарта: записать sale-сообщение (addSaleMsg с delete_at в прошлом или近), НЕ
+  вызывать таймер, эмулировать «рестарт» (новый вызов startSweeper с тем же файлом БД) → просроченное
+  сообщение удаляется свипером; будущее (delete_at>now) — остаётся до срока. Идемпотентность
+  повторного sweep (уже удалённое не удаляется дважды и вычищено из БД).
+
 ## 7. Приёмка
 
 - В канале одно закреплённое сообщение-статистика, обновляется при каждой продаже.
