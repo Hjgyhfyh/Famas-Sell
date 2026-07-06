@@ -2,10 +2,11 @@
 <html lang="ru" data-theme="bw">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
 <meta name="format-detection" content="telephone=no">
+<meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#000000" id="metaTheme">
 <title>FAMAS STORE ⁂ — магазин цифровых ключей</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23000'/%3E%3Ctext x='32' y='45' font-family='Georgia,serif' font-size='34' fill='%23fff' text-anchor='middle'%3E%E2%81%82%3C/text%3E%3C/svg%3E">
@@ -39,14 +40,14 @@
     <header class="masthead">
       <div class="mast-row">
         <span class="mono tiny dim caps">№ 001 · витрина</span>
-        <button type="button" class="iconbtn" id="btnSettings" aria-label="Настройки">⚙︎</button>
+        <button type="button" class="iconbtn" id="btnSettings" aria-label="Настройки"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8.1M17.6 8H20M4 16h2.4M9.9 16H20"/><circle cx="14.85" cy="8" r="2.35"/><circle cx="7.15" cy="16" r="2.35"/></svg></button>
       </div>
       <div class="brand">
         <div class="brand-mark serif" aria-hidden="true">⁂</div>
         <h1 class="brand-name serif">FAMAS STORE</h1>
         <p class="brand-slogan serif">черно-белый магазин цифровых ключей</p>
       </div>
-      <div class="trust mono tiny" id="trustLine" title="нажми, чтобы обновить">
+      <div class="trust mono tiny" id="trustLine" title="нажми, чтобы обновить" role="button" tabindex="0">
         <span class="dot" id="trustDot" aria-hidden="true"></span><span id="trustText">загрузка…</span>
       </div>
       <div class="facts gl">
@@ -65,7 +66,7 @@
     </div>
 
     <div class="search" id="searchWrap" hidden>
-      <input type="search" id="searchInput" class="mono" placeholder="поиск региона…" autocomplete="off" spellcheck="false">
+      <input type="search" id="searchInput" class="mono" placeholder="поиск региона…" autocomplete="off" spellcheck="false" aria-label="Поиск региона" enterkeyhint="search">
     </div>
 
     <div class="grid" id="regionGrid" role="group" aria-label="Выбор регионов"></div>
@@ -83,7 +84,7 @@
   <section class="tabpane" id="tab-keys" hidden>
     <div class="section-head tall">
       <h2 class="mono caps sec"><b>02 /</b> мои ключи</h2>
-      <button type="button" class="iconbtn" id="btnReloadKeys" aria-label="Обновить список">⟳</button>
+      <button type="button" class="iconbtn" id="btnReloadKeys" aria-label="Обновить список"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
     </div>
     <div id="keysList" class="keys"></div>
   </section>
@@ -160,8 +161,8 @@
     </div>
 
     <div class="help-actions">
-      <button type="button" class="btn secondary big wfull" id="btnSupport">✉︎ НАПИСАТЬ В ПОДДЕРЖКУ</button>
-      <button type="button" class="btn ghost big wfull" id="btnSettings2">⚙︎ НАСТРОЙКИ</button>
+      <button type="button" class="btn secondary big wfull" id="btnSupport"><svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3.5 7.5 8.5 6 8.5-6"/></svg>НАПИСАТЬ В ПОДДЕРЖКУ</button>
+      <button type="button" class="btn ghost big wfull" id="btnSettings2"><svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8.1M17.6 8H20M4 16h2.4M9.9 16H20"/><circle cx="14.85" cy="8" r="2.35"/><circle cx="7.15" cy="16" r="2.35"/></svg>НАСТРОЙКИ</button>
     </div>
     <p class="fine mono tiny dim center">оплата — звёзды telegram · выдача мгновенная · при сбое оплаты вернём звёзды через поддержку</p>
   </section>
@@ -193,7 +194,7 @@
 </nav>
 
 <!-- ── экран успеха ── -->
-<div class="ovl" id="ovl" hidden>
+<div class="ovl" id="ovl" role="dialog" aria-modal="true" aria-label="Оплата прошла" hidden>
   <div class="ovl-card gl" id="ovlCard">
     <svg class="ck" viewBox="0 0 72 72" aria-hidden="true">
       <circle class="ck-ring" cx="36" cy="36" r="33"></circle>
@@ -215,10 +216,10 @@
 
   <div class="set-row">
     <span class="set-label mono tiny caps">тема</span>
-    <div class="seg" id="segTheme">
+    <div class="seg" id="segTheme" role="radiogroup" aria-label="Тема оформления">
       <span class="seg-thumb" id="segThumb" aria-hidden="true"></span>
-      <button type="button" class="seg-btn mono active" data-th="bw">ЧБ</button>
-      <button type="button" class="seg-btn mono" data-th="dracula">DRACULA</button>
+      <button type="button" class="seg-btn mono active" role="radio" aria-checked="true" data-th="bw">ЧБ</button>
+      <button type="button" class="seg-btn mono" role="radio" aria-checked="false" data-th="dracula">DRACULA</button>
     </div>
   </div>
 
@@ -229,14 +230,14 @@
 
   <p class="set-prev mono tiny dim caps">превью</p>
   <div class="region on prev gl" id="prevCard" aria-hidden="true">
-    <span class="flagchip"><img src="/famas/flags/de.svg" alt=""><i class="flag-fb" hidden>🇩🇪</i></span>
+    <span class="flagchip"><img src="/famas/flags/de.svg" alt="" width="34" height="26" draggable="false" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><i class="flag-fb" hidden>🇩🇪</i></span>
     <span class="r-name">Германия</span>
     <span class="r-count mono">5 серв.</span>
     <span class="r-check"><svg viewBox="0 0 12 12"><path d="M2.5 6.5 5 9 9.5 3.5"></path></svg></span>
   </div>
 </div>
 
-<div class="toast mono" id="toast" hidden></div>
+<div class="toast mono" id="toast" role="status" aria-live="polite" hidden></div>
 
 <noscript><div class="noscript mono">включи JavaScript — без него магазин не работает</div></noscript>
 

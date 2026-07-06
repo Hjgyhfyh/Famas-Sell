@@ -142,9 +142,9 @@ function regionNameRu(iso, meta) {
   try {
     const rows = db.configsForRegions([iso]);
     const row = rows[0] || (db.fallbackForRegions([iso]) || [])[0];
-    if (row && row.country_name) return util.COUNTRY_RU[row.country_name] || row.country_name;
+    return util.nameRuOf(iso, row && row.country_name);
   } catch (e) { /* не критично */ }
-  return iso;
+  return util.nameRuOf(iso, null);
 }
 
 /** «🇩🇪 Германия · 🇳🇱 Нидерланды» */
@@ -950,18 +950,25 @@ function createBot() {
       );
       return;
     }
-    if (order.status === 'pending') {
+    const wasPending = order.status === 'pending';
+    if (wasPending) {
       order = db.markOrderPaid(id, sp.telegram_payment_charge_id) || db.getOrder(id);
     }
     selections.delete(ctx.from.id); // корзина сыграла — чистим
-    try {
-      db.logEvent('sale', { orderId: id, userId: ctx.from.id, stars: sp.total_amount });
-    } catch (e) { /* ок */ }
+    // ключ доставляем всегда (повторная доставка безвредна — юзер точно получит),
+    // но журнал продажи и уведомление админов — только на реальном переходе
+    // pending→paid: защита от повторной доставки одного апдейта Telegram
+    // (после краша до ack) — без дублей продаж в журнале и спама админам.
     await sendDelivery(ctx.api, ctx.chat.id, order);
-    await notifyAdmins(
-      ctx.api,
-      `💰 Продажа #${id} · ${userLabel(ctx.from)} · ${sp.total_amount} ⭐ · ${flagsOf(parseRegions(order)) || '—'}`
-    );
+    if (wasPending) {
+      try {
+        db.logEvent('sale', { orderId: id, userId: ctx.from.id, stars: sp.total_amount });
+      } catch (e) { /* ок */ }
+      await notifyAdmins(
+        ctx.api,
+        `💰 Продажа #${id} · ${userLabel(ctx.from)} · ${sp.total_amount} ⭐ · ${flagsOf(parseRegions(order)) || '—'}`
+      );
+    }
   });
 
   /* ── ответы админа на ForceReply-промпты ── */

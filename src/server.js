@@ -331,14 +331,12 @@ function createServer(botApi) {
       logErr('key/regionsSummary', e);
     }
 
-    const ruMap = util.COUNTRY_RU || {};
     const regions = isos.map(function (iso) {
-      let nameRu = null;
       const s = summaryByIso.get(iso);
-      if (s && s.nameRu) nameRu = s.nameRu;
+      let nameRu = s && s.nameRu ? s.nameRu : null;
       if (!nameRu) {
         const row = rows.find((c) => c && c.country_iso === iso && c.country_name);
-        if (row) nameRu = ruMap[row.country_name] || row.country_name;
+        nameRu = util.nameRuOf(iso, row && row.country_name);
       }
       return {
         iso: iso,

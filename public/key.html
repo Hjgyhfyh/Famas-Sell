@@ -6,27 +6,37 @@
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
 <meta name="format-detection" content="telephone=no">
+<meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#000000" id="metaTheme">
 <title>FAMAS STORE ⁂ — страница ключа</title>
+<meta property="og:site_name" content="FAMAS STORE ⁂">
+<meta property="og:title" content="Цифровая квитанция — ключ FAMAS">
+<meta property="og:description" content="QR-код, ссылка-подписка и кнопки приложений — всё на одной странице.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23000'/%3E%3Ctext x='32' y='45' font-family='Georgia,serif' font-size='34' fill='%23fff' text-anchor='middle'%3E%E2%81%82%3C/text%3E%3C/svg%3E">
 <script>
-/* тема и стекло — до первого рендера, без вспышки (ключи те же, что в mini app) */
+/* тема и стекло — ДО первого рендера, без вспышки (ключи те же, что в mini app) */
 (function () {
   try {
     var t = localStorage.getItem('famas_theme');
     if (t === 'dracula' || t === 'bw') document.documentElement.setAttribute('data-theme', t);
     if (localStorage.getItem('famas_glass') === '1') document.documentElement.setAttribute('data-glass', '1');
+    if (t === 'dracula') {
+      var m = document.getElementById('metaTheme');
+      if (m) m.setAttribute('content', '#191A21');
+    }
   } catch (e) { /* noop */ }
 })();
 </script>
 <style>
 /* ═══ FAMAS STORE ⁂ · страница ключа · «чёрный конверт, квитанция» ═══
-   дизайн v2 «FAMAS ROUNDED»: темы bw/dracula, жидкое стекло, скругления */
+   дизайн v2 «FAMAS ROUNDED»: темы bw/dracula, жидкое стекло, скругления.
+   только transform/opacity в анимациях; safe-area; печать; 320px → десктоп. */
 
 :root {
+  color-scheme: dark;
   --bg: #000; --bg2: #0a0a0a; --border: #26272b;
   --text: #fff; --muted: #8a8a8a; --dim: #666;
-  --accent: #fff; --accent2: #fff; --good: #50FA7B;
+  --accent: #fff;
   /* квитанция (bw: белая на чёрном — фирменный образ) */
   --tk-bg: #fff; --tk-text: #000; --tk-mut: #666; --tk-dim: #999;
   --tk-line: #e5e5e5; --tk-dots: #999; --tk-soft: #f5f5f5;
@@ -36,6 +46,7 @@
   --qr-c: #000;
   --tk-glass: rgba(255, 255, 255, .84); --tk-glass-fb: rgba(255, 255, 255, .97);
   --blob1: rgba(255, 255, 255, .07); --blob2: rgba(255, 255, 255, .05); --blob3: rgba(153, 153, 153, .06);
+  --sheen: rgba(0, 0, 0, .055);
   --r-sm: 10px; --r-md: 16px; --r-lg: 22px; --r-xl: 28px;
   --serif: Georgia, 'Times New Roman', serif;
   --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, Menlo, monospace;
@@ -44,7 +55,7 @@
 :root[data-theme="dracula"] {
   --bg: #191A21; --bg2: #21222C; --border: #44475A;
   --text: #F8F8F2; --muted: #6272A4; --dim: #6272A4;
-  --accent: #BD93F9; --accent2: #FF79C6; --good: #50FA7B;
+  --accent: #BD93F9;
   --tk-bg: #282A36; --tk-text: #F8F8F2; --tk-mut: #A6AACB; --tk-dim: #6272A4;
   --tk-line: #44475A; --tk-dots: #6272A4; --tk-soft: #21222C;
   --tk-dot: #50FA7B;
@@ -53,6 +64,7 @@
   --qr-c: #BD93F9;
   --tk-glass: rgba(40, 42, 54, .6); --tk-glass-fb: rgba(40, 42, 54, .96);
   --blob1: rgba(189, 147, 249, .14); --blob2: rgba(255, 121, 198, .12); --blob3: rgba(139, 233, 253, .10);
+  --sheen: rgba(255, 255, 255, .10);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -60,18 +72,23 @@ html { -webkit-text-size-adjust: 100%; background: var(--bg); }
 body {
   background: var(--bg); color: var(--text);
   font: 14px/1.5 var(--sans);
-  min-height: 100vh; -webkit-font-smoothing: antialiased;
+  min-height: 100vh; min-height: 100dvh; /* iOS: честная высота, vh — фолбэк */
+  -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
 }
 [hidden] { display: none !important; }
-button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulation; }
+button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulation; background: none; border: 0; }
+a { touch-action: manipulation; }
 img { display: block; }
+svg { display: block; }
 ::selection { background: var(--text); color: var(--bg); }
-.mono { font-family: var(--mono); }
+.ticket ::selection { background: var(--tk-text); color: var(--tk-bg); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .serif { font-family: var(--serif); }
+a:focus-visible, button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 4px; }
 body.theming, body.theming * { transition: background-color .25s ease, color .25s ease, border-color .25s ease !important; }
 
-/* блобы стекла */
+/* ── блобы жидкого стекла ── */
 .blobs { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; display: none; }
 :root[data-glass="1"] .blobs { display: block; }
 .bl { position: absolute; border-radius: 50%; filter: blur(90px); will-change: transform; }
@@ -82,75 +99,147 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 @keyframes dr2 { to { transform: translate(-14vw, -12vh) scale(.88); } }
 @keyframes dr3 { to { transform: translate(8vw, -16vh) scale(1.1); } }
 
-/* шум и рамка-паспарту */
+/* ── зерно бумаги и рамка-паспарту ── */
 .noise {
   position: fixed; inset: 0; z-index: 900; pointer-events: none; opacity: .04;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: 160px 160px;
 }
-.frame { position: fixed; inset: 10px; z-index: 5; border: 1px solid var(--border); border-radius: var(--r-lg); pointer-events: none; }
+.frame {
+  position: fixed; z-index: 5; pointer-events: none;
+  inset: max(10px, env(safe-area-inset-top, 0px)) max(10px, env(safe-area-inset-right, 0px))
+         max(10px, env(safe-area-inset-bottom, 0px)) max(10px, env(safe-area-inset-left, 0px));
+  border: 1px solid var(--border); border-radius: var(--r-lg);
+}
 
-/* сцена */
-.stage { position: relative; z-index: 10; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 34px 18px 16px; }
-.stage-cap { color: var(--dim); font-size: 9px; letter-spacing: .34em; text-transform: uppercase; margin-bottom: 16px; }
+/* ── сцена: колонка, конверт центруется вертикально, когда есть место
+   (auto-маржины flex безопасны: при переполнении схлопываются в 0) ── */
+.stage {
+  position: relative; z-index: 10; min-height: 100vh; min-height: 100svh;
+  display: flex; flex-direction: column; align-items: center;
+  padding: calc(28px + env(safe-area-inset-top, 0px))
+           calc(16px + env(safe-area-inset-right, 0px))
+           calc(18px + env(safe-area-inset-bottom, 0px))
+           calc(16px + env(safe-area-inset-left, 0px));
+}
+.stage-cap {
+  color: var(--dim); font-size: 9px; letter-spacing: .34em; text-indent: .34em;
+  text-transform: uppercase; text-align: center; margin-bottom: 18px;
+}
 
-/* загрузка / не найдено / ошибка */
-.loading { margin: auto; color: var(--dim); font-size: 10px; letter-spacing: .3em; text-transform: uppercase; animation: blink 1.1s ease-in-out infinite; }
-@keyframes blink { 50% { opacity: .25; } }
+/* ── загрузка ── */
+.loading { margin: auto; text-align: center; }
+.ld-mark { font-family: var(--serif); font-size: 34px; color: var(--muted); animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { opacity: .3; transform: scale(.94); } 50% { opacity: 1; transform: scale(1); } }
+.ld-cap { font-family: var(--mono); font-size: 9px; letter-spacing: .32em; text-indent: .32em; color: var(--dim); text-transform: uppercase; margin-top: 13px; }
+.ld-line { position: relative; width: 132px; height: 1px; margin: 16px auto 0; background: var(--border); overflow: hidden; }
+.ld-line i { position: absolute; left: 0; top: 0; width: 46px; height: 100%; background: var(--text); animation: ldslide 1.15s cubic-bezier(.45, 0, .55, 1) infinite; }
+@keyframes ldslide { 0% { transform: translateX(-48px); } 100% { transform: translateX(134px); } }
+
+/* ── не найдено / ошибка сети ── */
 .nf { margin: auto; text-align: center; max-width: 340px; padding: 30px 0; }
-.nf-mark { font-family: var(--serif); font-size: 30px; color: var(--muted); }
+.nf-mark { font-family: var(--serif); font-size: 34px; color: var(--muted); }
 .nf h1 { font-family: var(--serif); font-weight: 400; font-size: 24px; letter-spacing: .1em; margin: 16px 0 10px; }
 .nf p { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--dim); line-height: 1.9; }
 .nf .abtn { margin-top: 24px; }
 .abtn {
   display: inline-block; background: var(--accent); color: var(--bg); text-decoration: none;
   font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
-  padding: 14px 26px; border: 0; border-radius: 999px; transition: transform .15s ease;
+  padding: 14px 26px; border-radius: 999px; transition: transform .15s ease;
 }
 .abtn:active { transform: scale(.96); }
 
-/* ── квитанция ── */
+/* ── квитанция: падает и оседает ── */
 .ticket {
-  position: relative; width: 100%; max-width: 420px;
+  --pad-x: 22px;
+  position: relative; isolation: isolate; overflow: hidden; width: 100%; max-width: 420px;
   background-color: var(--tk-bg); color: var(--tk-text);
   border-radius: var(--r-lg); border: 1px solid var(--tk-line);
-  padding: 26px 22px 18px; margin: 0 auto;
-  animation: dropIn .5s cubic-bezier(.22, 1, .36, 1) both;
+  padding: 26px var(--pad-x) 18px; margin: auto;
+  box-shadow: 0 24px 60px -32px rgba(0, 0, 0, .55);
+  animation: dropIn .55s cubic-bezier(.22, 1, .36, 1) both;
 }
 @keyframes dropIn {
-  0% { opacity: 0; transform: translateY(-26px) rotate(-1.4deg); }
-  62% { opacity: 1; transform: translateY(4px) rotate(.35deg); }
+  0%   { opacity: 0; transform: translateY(-30px) rotate(-1.6deg) scale(.985); }
+  58%  { opacity: 1; transform: translateY(4px) rotate(.4deg) scale(1.002); }
+  82%  { transform: translateY(-1px) rotate(-.1deg); }
   100% { opacity: 1; transform: none; }
+}
+/* блик: полоса света проходит по квитанции после оседания (clip — overflow ticket) */
+.ticket::after {
+  content: ''; position: absolute; z-index: 2; top: -30%; bottom: -30%; left: 0; width: 44%;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 8%, var(--sheen) 50%, transparent 92%);
+  transform: translateX(-180%) skewX(-14deg);
+  animation: sheen 1.25s cubic-bezier(.4, 0, .2, 1) .95s both;
+}
+.ticket.dead::after { display: none; }
+@keyframes sheen { to { transform: translateX(460%) skewX(-14deg); } }
+/* каскад секций квитанции — проявляются одна за другой.
+   fill-mode backwards (не both!): после конца анимации opacity возвращается каскаду,
+   иначе fill намертво прибивает opacity:1 и ломает приглушение .dead-секций */
+.ticket > * { animation: secIn .5s cubic-bezier(.22, 1, .36, 1) backwards; }
+.ticket.dead > * { animation: none; }
+@keyframes secIn { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+.ticket > :nth-child(1)  { animation-delay: .08s; }
+.ticket > :nth-child(2)  { animation-delay: .11s; }
+.ticket > :nth-child(3)  { animation-delay: .14s; }
+.ticket > :nth-child(4)  { animation-delay: .17s; }
+.ticket > :nth-child(5)  { animation-delay: .20s; }
+.ticket > :nth-child(6)  { animation-delay: .23s; }
+.ticket > :nth-child(7)  { animation-delay: .26s; }
+.ticket > :nth-child(8)  { animation-delay: .29s; }
+.ticket > :nth-child(9)  { animation-delay: .32s; }
+.ticket > :nth-child(10) { animation-delay: .35s; }
+.ticket > :nth-child(11) { animation-delay: .38s; }
+.ticket > :nth-child(12) { animation-delay: .41s; }
+.ticket > :nth-child(13) { animation-delay: .44s; }
+.ticket > :nth-child(14) { animation-delay: .47s; }
+.ticket > :nth-child(15) { animation-delay: .50s; }
+.ticket > :nth-child(16) { animation-delay: .53s; }
+.ticket > :nth-child(17) { animation-delay: .56s; }
+.ticket > :nth-child(18) { animation-delay: .59s; }
+.ticket > :nth-child(19) { animation-delay: .62s; }
+/* водяной знак бумаги */
+.ticket::before {
+  content: '⁂'; position: absolute; z-index: -1; left: 50%; top: 50%;
+  transform: translate(-50%, -50%) rotate(-10deg);
+  font-family: var(--serif); font-size: 230px; line-height: 1;
+  color: var(--tk-text); opacity: .04; pointer-events: none;
 }
 :root[data-glass="1"] .ticket {
   background-color: var(--tk-glass);
   -webkit-backdrop-filter: blur(20px) saturate(160%);
   backdrop-filter: blur(20px) saturate(160%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 24px 60px -32px rgba(0, 0, 0, .55);
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   :root[data-glass="1"] .ticket { background-color: var(--tk-glass-fb); }
 }
 
-/* компактный переключатель темы на квитанции */
-.thsw { position: absolute; top: 14px; right: 14px; display: flex; gap: 6px; z-index: 3; }
+/* ── компактный переключатель темы на квитанции ── */
+.thsw { position: absolute; top: 14px; right: 14px; display: flex; gap: 8px; z-index: 3; }
 .thbtn {
   width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--tk-line);
-  padding: 0; background: none; position: relative; transition: transform .15s ease, border-color .2s ease, box-shadow .2s ease;
+  padding: 0; position: relative; transition: transform .15s ease, border-color .2s ease, box-shadow .2s ease;
 }
+/* тап-зона ≥44px: невидимое расширение хит-области */
+.thbtn::before { content: ''; position: absolute; inset: -11px; border-radius: 50%; }
 .thbtn:active { transform: scale(.9); }
 .thbtn.bwv { background: linear-gradient(90deg, #000 50%, #fff 50%); }
 .thbtn.drv { background: linear-gradient(135deg, #BD93F9, #FF79C6); }
-.thbtn.glv { background: linear-gradient(135deg, rgba(255, 255, 255, .45), rgba(255, 255, 255, .06)); }
+.thbtn.glv { background: linear-gradient(135deg, rgba(0, 0, 0, .35), rgba(0, 0, 0, .05)); }
+:root[data-theme="dracula"] .thbtn.glv { background: linear-gradient(135deg, rgba(255, 255, 255, .5), rgba(255, 255, 255, .08)); }
 .thbtn.act { border-color: var(--tk-text); box-shadow: 0 0 0 2px var(--tk-bg), 0 0 0 3px var(--tk-text); }
 
-/* шапка квитанции */
-.t-brand { text-align: center; font-size: 22px; letter-spacing: .05em; padding-top: 4px; }
+/* ── шапка квитанции ── */
+/* padding-top держит бренд НИЖЕ точек-переключателя (top 14 + 22) — без коллизий на 320px */
+.t-brand { text-align: center; font-size: 23px; letter-spacing: .05em; padding-top: 16px; }
 .t-brand .mk { color: var(--tk-mut); }
-.t-order { text-align: center; font-size: 11px; letter-spacing: .22em; color: var(--tk-mut); margin-top: 7px; text-transform: uppercase; }
+.t-order { text-align: center; font-size: 11px; letter-spacing: .22em; text-indent: .22em; color: var(--tk-mut); margin-top: 7px; text-transform: uppercase; }
 
-/* перфорация с выемками */
-.perf { position: relative; border-top: 1px dashed var(--tk-dots); margin: 18px -22px; }
+/* ── перфорация с выемками по краям ── */
+.perf { position: relative; border-top: 1px dashed var(--tk-dots); margin: 18px calc(var(--pad-x) * -1); }
 .perf::before, .perf::after {
   content: ''; position: absolute; top: -8px; width: 16px; height: 16px; border-radius: 50%;
   background: var(--bg); transition: background-color .25s ease;
@@ -158,24 +247,45 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 .perf::before { left: -8px; }
 .perf::after { right: -8px; }
 
-/* статус */
+/* ── статус: пульс + расходящееся кольцо ── */
 .t-status {
-  text-align: center; font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
-  display: flex; align-items: center; justify-content: center; gap: 8px;
+  text-align: center; font-size: 11px; letter-spacing: .18em; text-indent: .18em; text-transform: uppercase;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  font-variant-numeric: tabular-nums;
 }
-.st-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tk-dot); animation: pulse 1.6s ease-in-out infinite; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
+.st-dot { position: relative; width: 7px; height: 7px; border-radius: 50%; background: var(--tk-dot); flex: none; animation: pulse 1.7s ease-in-out infinite; }
+.st-dot::after {
+  content: ''; position: absolute; inset: -5px; border-radius: 50%;
+  border: 1px solid var(--tk-dot); opacity: 0;
+  animation: ping 2.2s cubic-bezier(0, 0, .2, 1) infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+@keyframes ping { 0% { transform: scale(.35); opacity: .8; } 70%, 100% { transform: scale(1.25); opacity: 0; } }
 .t-status.off { color: var(--tk-dim); }
-.dead-note { text-align: center; font-family: var(--mono); font-size: 9px; letter-spacing: .14em; color: var(--tk-dim); margin-top: 8px; text-transform: uppercase; }
+.days-note, .dead-note {
+  text-align: center; font-family: var(--mono); font-size: 9px; letter-spacing: .16em; text-indent: .16em;
+  color: var(--tk-dim); margin-top: 8px; text-transform: uppercase; font-variant-numeric: tabular-nums;
+}
+/* нить срока: тонкая шкала «сколько периода осталось» (scaleX — только композитинг) */
+.lifebar {
+  position: relative; width: 132px; height: 3px; margin: 9px auto 0;
+  border-radius: 999px; background: var(--tk-line); overflow: hidden;
+}
+.lifebar i {
+  position: absolute; inset: 0; border-radius: inherit; background: var(--tk-text);
+  transform-origin: left center; transform: scaleX(var(--life, 0));
+  transition: transform 1.1s cubic-bezier(.22, 1, .36, 1) .55s;
+}
 .buywrap { text-align: center; margin-top: 12px; }
 .buybtn {
   display: inline-block; background: var(--app-bg); color: var(--app-text); text-decoration: none;
   font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
-  padding: 12px 24px; border-radius: 999px;
+  padding: 15px 26px; border-radius: 999px; transition: transform .15s ease;
 }
-.dead .t-qr, .dead .t-link, .dead .t-apps { opacity: .3; pointer-events: none; }
+.buybtn:active { transform: scale(.96); }
+.dead .t-qr, .dead .t-link, .dead .t-apps { opacity: .3; pointer-events: none; user-select: none; -webkit-user-select: none; }
 
-/* заголовки секций квитанции */
+/* ── заголовки секций ── */
 .cap {
   display: flex; align-items: center; gap: 10px;
   font-family: var(--mono); font-size: 9px; letter-spacing: .24em; color: var(--tk-dim);
@@ -184,16 +294,25 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 .cap::after { content: ''; flex: 1; border-top: 1px solid var(--tk-line); }
 .cap b { color: var(--tk-text); font-weight: 400; }
 
-/* регионы: dotted leaders */
+/* ── регионы: dotted leaders + чернильный штамп ── */
+.t-regions { position: relative; }
+.stamp {
+  position: absolute; top: -6px; right: -4px; z-index: 1;
+  transform: rotate(-8deg);
+  border: 1.5px solid var(--tk-text); border-radius: 7px;
+  padding: 5px 10px; font-size: 8.5px; letter-spacing: .22em; text-indent: .22em;
+  text-transform: uppercase; color: var(--tk-text);
+  opacity: .16; pointer-events: none; white-space: nowrap;
+}
 .rrow { display: flex; align-items: center; gap: 9px; padding: 6px 0; font-size: 13px; }
-.rname { font-weight: 600; letter-spacing: .01em; }
-.lead { flex: 1; border-bottom: 1px dotted var(--tk-dots); transform: translateY(-3px); }
-.rcount { font-family: var(--mono); font-size: 11px; color: var(--tk-mut); letter-spacing: .06em; white-space: nowrap; }
+.rname { font-weight: 600; letter-spacing: .01em; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lead { flex: 1 1 14px; min-width: 14px; border-bottom: 1px dotted var(--tk-dots); transform: translateY(-3px); }
+.rcount { font-family: var(--mono); font-size: 11px; color: var(--tk-mut); letter-spacing: .06em; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .rrow.total { border-top: 1px solid var(--tk-line); margin-top: 6px; padding-top: 10px; }
 .rrow.total .rname { font-family: var(--mono); font-size: 10px; letter-spacing: .18em; font-weight: 400; color: var(--tk-mut); }
-.rrow.total .rcount { color: var(--tk-text); font-weight: 700; }
+.rrow.total .rcount { color: var(--tk-text); font-weight: 700; font-size: 12px; }
 
-/* флаг-чип (svg 4:3 + эмодзи-фолбэк) */
+/* флаг-чип: svg 4:3, скругление, внутренняя тень; эмодзи-фолбэк */
 .flagchip {
   position: relative; width: 30px; height: 23px; border-radius: 6px; overflow: hidden; flex: none;
   border: 1px solid var(--tk-line); background: var(--tk-soft);
@@ -204,35 +323,63 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 .flagchip::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2), inset 0 -1px 2px rgba(0, 0, 0, .2); pointer-events: none; }
 .flag-fb { font-style: normal; font-size: 14px; line-height: 1; }
 
-/* QR: белый квадрат со скруглёнными уголками-скобками */
+/* ── QR: белый квадрат, уголки-скобки, проявление как фотоплёнка ── */
 .t-qr { text-align: center; padding: 4px 0 2px; }
 .qrwrap { position: relative; display: inline-block; padding: 13px; }
-.qrbox { position: relative; background: #fff; border: 1px solid var(--tk-line); border-radius: var(--r-md); padding: 12px; }
-.qrbox img { width: 176px; height: 176px; opacity: 0; transform: scale(.96); transition: opacity .4s ease, transform .4s ease; }
-.qrbox img.ld { opacity: 1; transform: none; }
+.qrbox {
+  display: block; position: relative; background: #fff; border: 1px solid var(--tk-line); border-radius: var(--r-md);
+  padding: 12px; cursor: zoom-in; transition: transform .15s ease;
+}
+.qrbox:active { transform: scale(.97); }
+.qrbox img {
+  width: 176px; height: 176px; opacity: 0; transform: scale(.94); filter: blur(7px);
+  transition: opacity .55s ease, transform .55s cubic-bezier(.22, 1, .36, 1), filter .55s ease;
+}
+.qrbox img.ld { opacity: 1; transform: none; filter: none; }
 .qrwrap i { position: absolute; width: 16px; height: 16px; border: 2px solid var(--qr-c); }
 .qrwrap .c1 { left: 0; top: 0; border-right: 0; border-bottom: 0; border-radius: 8px 0 0 0; }
 .qrwrap .c2 { right: 0; top: 0; border-left: 0; border-bottom: 0; border-radius: 0 8px 0 0; }
 .qrwrap .c3 { left: 0; bottom: 0; border-right: 0; border-top: 0; border-radius: 0 0 0 8px; }
 .qrwrap .c4 { right: 0; bottom: 0; border-left: 0; border-top: 0; border-radius: 0 0 8px 0; }
-.qrcap { font-family: var(--mono); font-size: 9px; letter-spacing: .3em; color: var(--tk-dim); text-transform: uppercase; margin-top: 8px; }
+.qrcap { font-family: var(--mono); font-size: 9px; letter-spacing: .3em; text-indent: .3em; color: var(--tk-dim); text-transform: uppercase; margin-top: 8px; }
 
-/* ссылка-подписка */
+/* ── QR крупно: тап по QR-квадрату ── */
+.qrmodal {
+  position: fixed; inset: 0; z-index: 930;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(0, 0, 0, .82);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  cursor: zoom-out; opacity: 0; transition: opacity .22s ease; outline: 0;
+}
+.qrmodal.show { opacity: 1; }
+.qrmodal figure {
+  background: #fff; border-radius: var(--r-lg); padding: 16px 16px 13px;
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, .8);
+  transform: scale(.92) translateY(8px); transition: transform .25s cubic-bezier(.22, 1, .36, 1);
+}
+.qrmodal.show figure { transform: none; }
+.qrmodal img { width: min(74vw, 58vh, 340px); height: auto; }
+.qrmodal figcaption {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .26em; text-indent: .26em;
+  text-transform: uppercase; color: #666; text-align: center; margin-top: 10px;
+}
+
+/* ── ссылка-подписка ── */
 .linkbox {
   background: var(--tk-soft); border: 1px solid var(--tk-line); border-radius: var(--r-sm);
   font-family: var(--mono); font-size: 11px; line-height: 1.65; word-break: break-all;
-  color: var(--tk-text); padding: 12px 13px; cursor: pointer;
+  color: var(--tk-text); padding: 12px 13px; cursor: pointer; transition: border-color .2s ease;
 }
 .copybtn {
   position: relative; overflow: hidden; width: 100%; margin-top: 9px;
   background: var(--copy-bg); color: var(--copy-text); border: 1px solid var(--copy-bd); border-radius: 999px;
-  font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase;
+  font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .18em; text-indent: .18em; text-transform: uppercase;
   padding: 15px 12px; transition: transform .15s ease;
 }
 .copybtn:active { transform: scale(.97); }
 .copybtn .cb { position: relative; display: block; transition: opacity .18s ease, transform .18s ease; }
-.copybtn .cb-b { position: absolute; inset: 0; opacity: 0; transform: translateY(8px); }
-.copybtn.copied .cb-a { opacity: 0; transform: translateY(-8px); }
+.copybtn .cb-b { position: absolute; inset: 0; opacity: 0; transform: translateY(9px); }
+.copybtn.copied .cb-a { opacity: 0; transform: translateY(-9px); }
 .copybtn.copied .cb-b { opacity: 1; transform: none; }
 .ripple {
   position: absolute; border-radius: 50%; pointer-events: none;
@@ -242,52 +389,67 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 :root[data-theme="dracula"] .ripple { background: rgba(255, 255, 255, .35); }
 @keyframes rip { to { transform: scale(3); opacity: 0; } }
 
-/* кнопки приложений */
+/* ── кнопки приложений ── */
 .appbtn {
   display: block; text-align: center; text-decoration: none;
   background: var(--app-bg); color: var(--app-text);
-  font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: .14em; text-indent: .14em; text-transform: uppercase;
   padding: 15px 12px; border-radius: var(--r-sm); margin-top: 10px;
   transition: transform .15s ease, opacity .15s ease;
 }
 .appbtn:active { transform: scale(.97); opacity: .85; }
 .storeline { font-family: var(--mono); font-size: 9.5px; letter-spacing: .05em; color: var(--tk-dim); text-align: center; margin-top: 5px; }
-.storeline a { color: var(--tk-mut); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
+.storeline a {
+  color: var(--tk-mut); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px;
+  display: inline-block; padding: 12px 6px; margin: -9px -3px; /* тап-зона без сдвига макета */
+}
+.desk-note {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em; line-height: 1.8;
+  color: var(--tk-dim); text-align: center; margin-top: 12px;
+}
 
-/* инструкция-раскрывашка */
+/* ── инструкция-раскрывашка (grid-трюк: высота без магических чисел) ── */
 .howto { border-top: 1px solid var(--tk-line); margin-top: 16px; }
 .howto-btn {
   width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  background: none; border: 0; padding: 14px 2px; text-align: left;
+  padding: 15px 2px; min-height: 44px; text-align: left;
   font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em; color: var(--tk-text); text-transform: uppercase;
 }
-.hx { font-size: 15px; color: var(--tk-dim); transition: transform .2s ease; flex: none; }
+.hx { font-size: 15px; color: var(--tk-dim); transition: transform .25s ease, color .2s ease; flex: none; }
 .howto.open .hx { transform: rotate(45deg); }
-.howto-panel { max-height: 0; overflow: hidden; transition: max-height .3s cubic-bezier(.22, 1, .36, 1); }
-.howto.open .howto-panel { max-height: 520px; }
+.howto-panel { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .36s cubic-bezier(.22, 1, .36, 1); }
+.howto.open .howto-panel { grid-template-rows: 1fr; }
+.howto-clip { overflow: hidden; min-height: 0; }
 .howto-body { padding: 0 2px 14px; font-size: 12px; line-height: 1.7; color: var(--tk-mut); }
 .hs { display: flex; gap: 10px; margin: 8px 0; }
 .hs b { font-family: var(--mono); font-size: 9px; line-height: 2.3; color: var(--tk-text); letter-spacing: .1em; font-weight: 400; white-space: nowrap; }
 
-/* штрих-код и хвост */
+/* ── штрих-код (JS рисует уникальный из токена; до этого — CSS-фолбэк) ── */
 .barcode {
-  height: 36px; margin: 16px 0 8px; border-radius: 3px;
+  height: 36px; margin: 16px 0 9px; border-radius: 3px; opacity: .92;
   background: repeating-linear-gradient(90deg,
     var(--tk-text) 0 2px, transparent 2px 5px,
     var(--tk-text) 5px 6px, transparent 6px 8px,
     var(--tk-text) 8px 11px, transparent 11px 13px,
     var(--tk-text) 13px 14px, transparent 14px 18px);
-  opacity: .9;
+  print-color-adjust: exact; -webkit-print-color-adjust: exact;
 }
-.t-tail { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 9px; letter-spacing: .18em; color: var(--tk-dim); text-transform: uppercase; }
+.barcode.real { background: none; }
+.barcode svg { width: 100%; height: 100%; fill: var(--tk-text); }
+.t-tail {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  font-family: var(--mono); font-size: 9px; letter-spacing: .18em; color: var(--tk-dim);
+  text-transform: uppercase; font-variant-numeric: tabular-nums;
+}
+.t-tail .tmk { letter-spacing: 0; }
 
-/* футер страницы */
-.foot { margin-top: 24px; padding-bottom: 10px; text-align: center; font-family: var(--mono); font-size: 9px; letter-spacing: .2em; color: var(--dim); text-transform: uppercase; line-height: 2; }
+/* ── футер страницы ── */
+.foot { margin-top: 26px; text-align: center; font-family: var(--mono); font-size: 9px; letter-spacing: .2em; color: var(--dim); text-transform: uppercase; line-height: 2.1; }
 .foot a { color: var(--muted); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
 
-/* тост */
+/* ── тост ── */
 .toast {
-  position: fixed; left: 50%; bottom: 28px; z-index: 950;
+  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 950;
   transform: translateX(-50%) translateY(10px);
   background: var(--text); color: var(--bg); border-radius: 999px;
   font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
@@ -296,25 +458,77 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 }
 .toast.show { opacity: 1; transform: translateX(-50%); }
 
+/* ── ховеры только там, где есть курсор ── */
+@media (hover: hover) and (pointer: fine) {
+  .appbtn:hover { transform: translateY(-1px); opacity: .92; }
+  .copybtn:hover, .abtn:hover, .buybtn:hover, .qrbox:hover { transform: translateY(-1px); }
+  .thbtn:hover { transform: scale(1.12); }
+  .linkbox:hover { border-color: var(--tk-dots); }
+  .linkbox { -webkit-user-select: all; user-select: all; }
+  .storeline a:hover { color: var(--tk-text); text-decoration-style: solid; }
+  .foot a:hover { color: var(--text); text-decoration-style: solid; }
+  .howto-btn:hover .hx { color: var(--tk-text); }
+}
+
+/* ── узкие экраны (320 и меньше 360) ── */
+@media (max-width: 359px) {
+  .ticket { --pad-x: 15px; padding-top: 22px; padding-bottom: 14px; }
+  .t-brand { font-size: 20px; }
+  .rrow { font-size: 12.5px; gap: 8px; }
+  .flagchip { width: 27px; height: 21px; }
+  .stamp { right: -8px; }
+}
+@media (max-width: 339px) {
+  .qrbox img { width: 148px; height: 148px; }
+  .storeline { font-size: 9px; }
+}
+
+/* ── десктоп: конверт крупнее и дышит по центру ── */
+@media (min-width: 720px) {
+  .stage { padding-top: calc(44px + env(safe-area-inset-top, 0px)); padding-bottom: calc(30px + env(safe-area-inset-bottom, 0px)); }
+  .stage-cap { margin-bottom: 26px; }
+  .frame { inset: 14px; border-radius: var(--r-xl); }
+  .ticket { --pad-x: 30px; max-width: 448px; padding-top: 32px; padding-bottom: 22px; }
+  .t-brand { font-size: 25px; }
+  .qrbox img { width: 188px; height: 188px; }
+  .foot { margin-top: 34px; }
+}
+
+/* ── бережно к укачиванию ── */
 @media (prefers-reduced-motion: reduce) {
-  .bl, .st-dot, .loading { animation: none !important; }
-  .ticket { animation-duration: 0s !important; }
+  .bl, .st-dot, .st-dot::after, .ld-mark, .ld-line i { animation: none !important; }
+  .st-dot::after { display: none; }
+  .ticket, .ticket > * { animation: none !important; }
+  .ticket::after { display: none; }
   *, *::before, *::after { transition-duration: .01s !important; }
 }
 
-/* ── печать: белый фон, только суть ── */
+/* ── печать: чистая белая квитанция в любой теме ── */
 @media print {
-  body { background: #fff !important; color: #000 !important; }
-  .noise, .frame, .blobs, .foot, .toast, .thsw, .t-apps, .copybtn, .howto, .buywrap, .stage-cap { display: none !important; }
-  .stage { padding: 0; min-height: 0; }
-  .ticket {
-    animation: none !important; border: 1px solid #999; border-radius: 0;
-    background: #fff !important; color: #000 !important; max-width: 100%;
+  @page { margin: 12mm; }
+  :root, :root[data-theme="dracula"] {
+    --tk-bg: #fff; --tk-text: #000; --tk-mut: #444; --tk-dim: #777;
+    --tk-line: #bbb; --tk-dots: #999; --tk-soft: #fff; --tk-dot: #000; --qr-c: #000;
   }
+  body { background: #fff !important; color: #000 !important; }
+  .noise, .frame, .blobs, .foot, .toast, .thsw, .t-apps, .copybtn, .howto,
+  .buywrap, .stage-cap, .desk-note, .st-dot::after,
+  .qrmodal, .lifebar, .ticket::after { display: none !important; }
+  .stage { padding: 0; min-height: 0; }
+  .ticket, .ticket > * { animation: none !important; opacity: 1 !important; }
+  .ticket {
+    border: 1px solid #999; border-radius: 0; box-shadow: none;
+    background: #fff !important; color: #000 !important; max-width: 100%; margin: 0 auto;
+    -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+  }
+  .ticket::before { display: none; }
+  .st-dot { animation: none !important; }
   .perf::before, .perf::after { background: #fff !important; }
-  .qrbox img { opacity: 1 !important; transform: none !important; }
+  .qrbox { border-color: #ccc; }
+  .qrbox img { opacity: 1 !important; transform: none !important; filter: none !important; }
   .linkbox { background: #fff; border: 1px dashed #999; color: #000; }
   .barcode { opacity: 1; }
+  .stamp { opacity: .35; }
 }
 </style>
 </head>
@@ -327,12 +541,25 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 <main class="stage">
   <div class="stage-cap mono">famas store — цифровая квитанция</div>
 
+  <noscript>
+    <div class="nf">
+      <div class="nf-mark" aria-hidden="true">⁂</div>
+      <h1>НУЖЕН JAVASCRIPT</h1>
+      <p>включи javascript и обнови страницу — квитанция загружается скриптом</p>
+    </div>
+    <style>.loading { display: none !important; }</style>
+  </noscript>
+
   <!-- загрузка -->
-  <div class="loading mono" id="loading">— загрузка —</div>
+  <div class="loading" id="loading" role="status" aria-live="polite">
+    <div class="ld-mark" aria-hidden="true">⁂</div>
+    <div class="ld-cap">загрузка квитанции</div>
+    <div class="ld-line" aria-hidden="true"><i></i></div>
+  </div>
 
   <!-- ключ не найден -->
   <div class="nf" id="notfound" hidden>
-    <div class="nf-mark">⁂</div>
+    <div class="nf-mark" aria-hidden="true">⁂</div>
     <h1>КЛЮЧ НЕ НАЙДЕН</h1>
     <p>проверь ссылку — или возьми новый ключ в магазине</p>
     <a class="abtn" href="https://t.me/FamasSellerBot">ОТКРЫТЬ МАГАЗИН</a>
@@ -340,18 +567,18 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 
   <!-- ошибка сети -->
   <div class="nf" id="loaderr" hidden>
-    <div class="nf-mark">⁂</div>
+    <div class="nf-mark" aria-hidden="true">⁂</div>
     <h1>НЕ ПОЛУЧИЛОСЬ</h1>
     <p>сеть шалит — не удалось загрузить квитанцию</p>
-    <button type="button" class="abtn" id="btnReload">⟳ ОБНОВИТЬ</button>
+    <button type="button" class="abtn" id="btnReload">⟳ ПОВТОРИТЬ</button>
   </div>
 
   <!-- квитанция -->
   <article class="ticket" id="ticket" hidden>
-    <div class="thsw" id="thsw" aria-label="Тема">
-      <button type="button" class="thbtn bwv" id="thBw" aria-label="Тема: чёрно-белая"></button>
-      <button type="button" class="thbtn drv" id="thDr" aria-label="Тема: dracula"></button>
-      <button type="button" class="thbtn glv" id="thGl" aria-label="Жидкое стекло"></button>
+    <div class="thsw" id="thsw" role="group" aria-label="Тема оформления">
+      <button type="button" class="thbtn bwv" id="thBw" title="Чёрно-белая тема" aria-label="Тема: чёрно-белая" aria-pressed="false"></button>
+      <button type="button" class="thbtn drv" id="thDr" title="Тема Dracula" aria-label="Тема: dracula" aria-pressed="false"></button>
+      <button type="button" class="thbtn glv" id="thGl" title="Жидкое стекло" aria-label="Жидкое стекло" aria-pressed="false"></button>
     </div>
 
     <header>
@@ -362,15 +589,18 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     <div class="perf" aria-hidden="true"></div>
 
     <div class="t-status mono" id="statusRow"></div>
-    <p class="dead-note" id="deadNote" hidden>ключ истёк — подписка пуста</p>
+    <p class="days-note" id="daysNote" hidden></p>
+    <div class="lifebar" id="lifeBar" hidden aria-hidden="true"><i id="lifeFill"></i></div>
+    <p class="dead-note" id="deadNote" hidden>срок ключа истёк — подписка пуста</p>
     <div class="buywrap" id="buyNewWrap" hidden>
-      <a class="buybtn mono" href="https://t.me/FamasSellerBot">КУПИТЬ НОВЫЙ</a>
+      <a class="buybtn" id="buyBtn" href="https://t.me/FamasSellerBot">КУПИТЬ НОВЫЙ</a>
     </div>
 
     <div class="perf" aria-hidden="true"></div>
 
-    <section>
+    <section class="t-regions">
       <div class="cap"><b>01 /</b> регионы</div>
+      <div class="stamp mono" id="stamp" hidden aria-hidden="true"></div>
       <div id="regionRows"></div>
     </section>
 
@@ -380,7 +610,9 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       <div class="cap"><b>02 /</b> qr</div>
       <div class="qrwrap">
         <i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i>
-        <div class="qrbox"><img id="qrImg" alt="QR-код подписки" width="176" height="176"></div>
+        <button type="button" class="qrbox" id="qrBtn" title="нажми — крупнее" aria-label="Показать QR-код крупно">
+          <img id="qrImg" alt="QR-код ссылки-подписки" width="176" height="176" decoding="async" fetchpriority="high">
+        </button>
       </div>
       <div class="qrcap">сканируй из приложения</div>
     </section>
@@ -392,7 +624,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       <div class="linkbox mono" id="subBox" title="нажми — скопируется"></div>
       <button type="button" class="copybtn" id="copyBtn">
         <span class="cb cb-a">⧉ КОПИРОВАТЬ</span>
-        <span class="cb cb-b">СКОПИРОВАНО ✓</span>
+        <span class="cb cb-b" aria-hidden="true">СКОПИРОВАНО ✓</span>
       </button>
     </section>
 
@@ -406,24 +638,27 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       <div class="storeline" id="storeTun"></div>
       <a class="appbtn" id="btnNg" href="#" rel="noopener">▸ ОТКРЫТЬ В V2RAYNG</a>
       <div class="storeline" id="storeNg"></div>
+      <div class="desk-note" id="deskNote" hidden>на компьютере? открой страницу с телефона —<br>или вставь ссылку / отсканируй qr в приложении</div>
     </section>
 
     <div class="howto" id="howto">
-      <button type="button" class="howto-btn" id="howtoBtn" aria-expanded="false">
+      <button type="button" class="howto-btn" id="howtoBtn" aria-expanded="false" aria-controls="howtoPanel">
         <span>01 УСТАНОВИ · 02 НАЖМИ КНОПКУ · 03 ПОДКЛЮЧИСЬ</span>
         <span class="hx" aria-hidden="true">+</span>
       </button>
-      <div class="howto-panel">
-        <div class="howto-body">
-          <div class="hs"><b>01</b><span>Поставь одно из приложений: Happ, v2rayTun или v2rayNG — ссылки на сторы под кнопками выше.</span></div>
-          <div class="hs"><b>02</b><span>Вернись сюда и нажми «ОТКРЫТЬ В …» — подписка добавится сама. Либо скопируй ссылку и вставь в приложении («добавить из буфера»), либо сканируй QR.</span></div>
-          <div class="hs"><b>03</b><span>Выбери сервер и жми подключить. Серверы внутри подписки обновляются сами — ссылка одна навсегда.</span></div>
+      <div class="howto-panel" id="howtoPanel">
+        <div class="howto-clip">
+          <div class="howto-body">
+            <div class="hs"><b>01</b><span>Поставь одно из приложений: Happ, v2rayTun или v2rayNG — ссылки на сторы под кнопками выше.</span></div>
+            <div class="hs"><b>02</b><span>Вернись сюда и нажми «ОТКРЫТЬ В …» — подписка добавится сама. Либо скопируй ссылку и вставь в приложении («добавить из буфера»), либо сканируй QR.</span></div>
+            <div class="hs"><b>03</b><span>Выбери сервер и жми подключить. Серверы внутри подписки обновляются сами — ссылка одна навсегда.</span></div>
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="barcode" aria-hidden="true"></div>
-    <div class="t-tail"><span id="tailNo">№ ——————</span><span id="tailDate">—</span></div>
+    <div class="barcode" id="barcode" aria-hidden="true"></div>
+    <div class="t-tail"><span id="tailNo">№ ——————</span><span class="tmk" aria-hidden="true">⁂</span><span id="tailDate">—</span></div>
   </article>
 
   <footer class="foot">
@@ -431,12 +666,20 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   </footer>
 </main>
 
-<div class="toast mono" id="toast" hidden></div>
+<div class="qrmodal" id="qrModal" hidden role="dialog" aria-modal="true" aria-label="QR-код крупно" tabindex="-1">
+  <figure>
+    <img id="qrBig" alt="QR-код ссылки-подписки крупно">
+    <figcaption>сканируй из приложения</figcaption>
+  </figure>
+</div>
+
+<div class="toast mono" id="toast" role="status" aria-live="polite" hidden></div>
 
 <script>
 (function () {
   'use strict';
 
+  /* ── помощники ── */
   function $(id) { return document.getElementById(id); }
   function esc(s) {
     return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -454,12 +697,25 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   function isoFlag(iso) {
     try {
       iso = String(iso || '').toUpperCase();
-      if (!/^[A-Z]{2}$/.test(iso)) return '⁂';
+      if (!/^[A-Z]{2}$/.test(iso) || iso === 'XX') return '⁂';
       return String.fromCodePoint(0x1F1E6 + iso.charCodeAt(0) - 65, 0x1F1E6 + iso.charCodeAt(1) - 65);
     } catch (e) { return '⁂'; }
   }
+  function ruDays(n) {
+    var a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return 'дней';
+    if (b > 1 && b < 5) return 'дня';
+    if (b === 1) return 'день';
+    return 'дней';
+  }
 
-  /* ── темы (те же ключи localStorage, что и в mini app) ── */
+  /* ── платформа: порядок сторов и подсказки ── */
+  var UA = navigator.userAgent || '';
+  var isIOS = /iPad|iPhone|iPod/.test(UA) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var isAndroid = /android/i.test(UA);
+
+  /* ── темы (ключи localStorage те же, что в mini app) ── */
   var THEME_KEY = 'famas_theme', GLASS_KEY = 'famas_glass';
   var THEME_BG = { bw: '#000000', dracula: '#191A21' };
   var themingTimer = null;
@@ -470,12 +726,17 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   }
   function getTheme() { return document.documentElement.getAttribute('data-theme') === 'dracula' ? 'dracula' : 'bw'; }
   function getGlass() { return document.documentElement.getAttribute('data-glass') === '1'; }
+  function setPressed(el, on) {
+    el.classList.toggle('act', on);
+    el.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
   function syncSw() {
-    $('thBw').classList.toggle('act', getTheme() === 'bw');
-    $('thDr').classList.toggle('act', getTheme() === 'dracula');
-    $('thGl').classList.toggle('act', getGlass());
+    var t = getTheme();
+    setPressed($('thBw'), t === 'bw');
+    setPressed($('thDr'), t === 'dracula');
+    setPressed($('thGl'), getGlass());
     var meta = $('metaTheme');
-    if (meta) meta.setAttribute('content', THEME_BG[getTheme()]);
+    if (meta) meta.setAttribute('content', THEME_BG[t]);
   }
   function setTheme(t) {
     crossfade();
@@ -496,7 +757,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   $('thGl').addEventListener('click', toggleGlass);
   syncSw();
 
-  /* ── тосты ── */
+  /* ── тост ── */
   var toastTimer = null;
   function toast(msg) {
     var t = $('toast');
@@ -510,13 +771,13 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     }, 1800);
   }
 
-  /* ── копирование с фолбэком + морф кнопки + рипл ── */
+  /* ── копирование: clipboard → execCommand-фолбэк; морф кнопки ── */
   var copiedTimer = null;
   function markCopied() {
     var b = $('copyBtn');
     b.classList.add('copied');
     clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(function () { b.classList.remove('copied'); }, 1500);
+    copiedTimer = setTimeout(function () { b.classList.remove('copied'); }, 1600);
     toast('скопировано');
   }
   function copyText(text) {
@@ -526,6 +787,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       ta.setAttribute('readonly', '');
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
+      ta.style.fontSize = '16px'; /* iOS: <16px на фокусе зумит вьюпорт */
       document.body.appendChild(ta);
       ta.select();
       ta.setSelectionRange(0, ta.value.length);
@@ -555,7 +817,22 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     } catch (e) { /* noop */ }
   }
 
-  /* эмодзи-фолбэк для svg-флагов (error не всплывает — capture) */
+  /* ── штрих-код: уникальный рисунок из токена (чистая декорация) ── */
+  function barcodeSvg(seed) {
+    var s = String(seed || 'famas-store');
+    var parts = [];
+    var x = 0;
+    for (var i = 0; i < 52; i++) {
+      var c = s.charCodeAt(i % s.length) * 31 + i * 17;
+      var w = 1 + (c % 3);
+      var g = 1 + ((c >> 2) % 2);
+      parts.push('<rect x="' + x + '" y="0" width="' + w + '" height="36"></rect>');
+      x += w + g;
+    }
+    return '<svg viewBox="0 0 ' + x + ' 36" preserveAspectRatio="none" focusable="false" aria-hidden="true">' + parts.join('') + '</svg>';
+  }
+
+  /* эмодзи-фолбэк для svg-флагов (error не всплывает — ловим capture) */
   document.addEventListener('error', function (ev) {
     var img = ev.target;
     if (img && img.tagName === 'IMG' && img.parentNode &&
@@ -566,9 +843,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     }
   }, true);
 
-  /* ── сторы: iOS первым на iOS ── */
-  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  /* ── сторы: на iOS первым App Store, иначе Google Play ── */
   var STORES = {
     happ: [
       { n: 'App Store', u: 'https://apps.apple.com/app/id6504287215', ios: true },
@@ -592,7 +867,9 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     for (var i = 0; i < list.length; i++) {
       links.push('<a href="' + list[i].u + '" target="_blank" rel="noopener noreferrer">' + list[i].n + '</a>');
     }
-    return 'нет приложения? скачать: ' + links.join(' · ');
+    var s = 'нет приложения? скачать: ' + links.join(' · ');
+    if (isIOS && key === 'v2rayng') s += ' · только android';
+    return s;
   }
 
   /* ── экраны ── */
@@ -600,32 +877,67 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     var ids = ['loading', 'notfound', 'loaderr', 'ticket'];
     for (var i = 0; i < ids.length; i++) $(ids[i]).hidden = ids[i] !== id;
   }
-  $('btnReload').addEventListener('click', function () { location.reload(); });
 
-  /* ── рендер квитанции ── */
-  function setApp(id, url) {
-    var a = $(id);
-    if (url) a.setAttribute('href', url);
-    else a.hidden = true;
+  /* ── рендер квитанции (идемпотентный: onclick, не addEventListener) ── */
+  function setApp(btnId, lineId, url, html) {
+    var a = $(btnId), l = $(lineId);
+    if (url) {
+      a.setAttribute('href', url);
+      l.innerHTML = html;
+    } else {
+      a.hidden = true;
+      l.hidden = true;
+    }
   }
 
   function render(d) {
+    document.title = 'FAMAS ⁂ КЛЮЧ № ' + pad6(d.orderId);
     $('orderNo').textContent = 'ЗАКАЗ № ' + pad6(d.orderId);
     $('tailNo').textContent = '№ ' + pad6(d.orderId);
     $('tailDate').textContent = fmtDate(d.createdAt);
 
+    /* статус + штамп + счётчик дней */
     var stat = $('statusRow');
+    var stamp = $('stamp');
     if (d.active) {
-      stat.innerHTML = '<span class="st-dot"></span><span>АКТИВЕН · до ' + esc(fmtDate(d.expiresAt)) +
-        (d.status === 'gift' ? ' · подарок' : '') + '</span>';
+      stat.classList.remove('off');
+      stat.innerHTML = '<span class="st-dot" aria-hidden="true"></span><span>АКТИВЕН · до ' +
+        esc(fmtDate(d.expiresAt)) + (d.status === 'gift' ? ' · ПОДАРОК' : '') + '</span>';
+      stamp.textContent = d.status === 'gift' ? '⁂ подарок' : '⁂ оплачено';
+      var left = Math.ceil((toMs(d.expiresAt) - Date.now()) / 86400000);
+      var dn = $('daysNote');
+      dn.textContent = left <= 0 ? 'истекает сегодня' : 'осталось ' + left + ' ' + ruDays(left);
+      dn.hidden = false;
+
+      /* нить срока: доля оставшегося периода (проявляется после оседания квитанции) */
+      var cMs = toMs(d.createdAt), eMs = toMs(d.expiresAt);
+      if (cMs && eMs && eMs > cMs) {
+        var frac = Math.max(.02, Math.min(1, (eMs - Date.now()) / (eMs - cMs)));
+        $('lifeBar').hidden = false;
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () {
+            $('lifeFill').style.setProperty('--life', String(frac));
+          });
+        });
+      }
     } else {
+      var pending = (d.status === 'pending');
+      var refunded = (d.status === 'refunded');
       stat.classList.add('off');
-      stat.innerHTML = '<span>○ ИСТЁК · ' + esc(fmtDate(d.expiresAt)) + '</span>';
+      stat.innerHTML = '<span>○ ' + (pending ? 'НЕ ОПЛАЧЕН' : refunded ? 'ВОЗВРАТ ЗВЁЗД' : 'ИСТЁК · ' + esc(fmtDate(d.expiresAt))) + '</span>';
+      $('deadNote').textContent = pending ? 'заказ ещё не оплачен — подписка появится после оплаты'
+        : refunded ? 'по заказу оформлен возврат — подписка отключена'
+        : 'срок ключа истёк — подписка пуста';
       $('deadNote').hidden = false;
+      $('buyBtn').textContent = pending ? 'ЗАВЕРШИТЬ ПОКУПКУ' : 'КУПИТЬ НОВЫЙ';
       $('buyNewWrap').hidden = false;
       $('ticket').classList.add('dead');
+      stamp.textContent = pending ? '⁂ не оплачен' : refunded ? '⁂ возврат' : '⁂ истёк';
+      document.title += pending ? ' · не оплачен' : refunded ? ' · возврат' : ' · истёк';
     }
+    stamp.hidden = false;
 
+    /* регионы: dotted leaders + svg-флаги с эмодзи-фолбэком */
     var rows = '';
     var regs = d.regions || [];
     for (var i = 0; i < regs.length; i++) {
@@ -633,7 +945,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       var lo = String(r.iso || 'xx').toLowerCase();
       rows +=
         '<div class="rrow">' +
-          '<span class="flagchip"><img src="/famas/flags/' + esc(lo) + '.svg" alt=""><i class="flag-fb" hidden>' + esc(r.flag || isoFlag(r.iso)) + '</i></span>' +
+          '<span class="flagchip"><img src="/famas/flags/' + esc(lo) + '.svg" alt="" loading="lazy"><i class="flag-fb" hidden>' + esc(r.flag || isoFlag(r.iso)) + '</i></span>' +
           '<span class="rname">' + esc(r.nameRu || r.iso) + '</span>' +
           '<span class="lead"></span>' +
           '<span class="rcount">' + (Number(r.count) || 0) + ' серв.</span>' +
@@ -643,41 +955,84 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     rows += '<div class="rrow total"><span class="rname">ВСЕГО СЕРВЕРОВ</span><span class="lead"></span><span class="rcount">' + (Number(d.servers) || 0) + '</span></div>';
     $('regionRows').innerHTML = rows;
 
+    /* QR: проявление после загрузки; при ошибке — прячем секцию */
     var qr = $('qrImg');
-    qr.addEventListener('load', function () { qr.classList.add('ld'); });
-    qr.addEventListener('error', function () { qr.closest('.t-qr').style.display = 'none'; });
+    qr.onload = function () { qr.classList.add('ld'); };
+    qr.onerror = function () {
+      var sec = qr.closest('.t-qr');
+      if (sec) sec.style.display = 'none';
+    };
     qr.src = '/famas/qr/' + encodeURIComponent(token) + '.svg';
 
+    /* ссылка-подписка */
     var sub = d.sub || '';
     $('subBox').textContent = sub;
-    $('subBox').addEventListener('click', function () { copyText(sub); });
-    $('copyBtn').addEventListener('click', function (ev) { ripple(ev, this); copyText(sub); });
+    $('subBox').onclick = function () { if (sub) copyText(sub); else toast('ссылка недоступна'); };
+    $('copyBtn').onclick = function (ev) { ripple(ev, this); if (sub) copyText(sub); else toast('ссылка недоступна'); };
 
+    /* кнопки приложений + сторы под платформу */
     var L = d.links || {};
-    setApp('btnHapp', L.happ);
-    setApp('btnTun', L.v2raytun);
-    setApp('btnNg', L.v2rayng);
-    $('storeHapp').innerHTML = storeLine('happ');
-    $('storeTun').innerHTML = storeLine('v2raytun');
-    $('storeNg').innerHTML = storeLine('v2rayng');
+    setApp('btnHapp', 'storeHapp', L.happ, storeLine('happ'));
+    setApp('btnTun', 'storeTun', L.v2raytun, storeLine('v2raytun'));
+    setApp('btnNg', 'storeNg', L.v2rayng, storeLine('v2rayng'));
+    if (!isIOS && !isAndroid) $('deskNote').hidden = false;
+
+    /* штрих-код из токена */
+    var bc = $('barcode');
+    bc.innerHTML = barcodeSvg(token || String(d.orderId || ''));
+    bc.classList.add('real');
 
     show('ticket');
   }
 
-  /* раскрывашка */
+  /* раскрывашка инструкции */
   $('howtoBtn').addEventListener('click', function () {
     var open = $('howto').classList.toggle('open');
     this.setAttribute('aria-expanded', open ? 'true' : 'false');
   });
 
-  /* ── загрузка ключа: /famas/k/<token> → /famas/api/key/<token> ── */
+  /* ── QR крупно: тап по QR-квадрату открывает увеличенную версию ── */
+  var qrHideTimer = null;
+  function openQr() {
+    if ($('ticket').classList.contains('dead')) return;
+    var src = $('qrImg').getAttribute('src');
+    if (!src) return;
+    $('qrBig').setAttribute('src', src);
+    clearTimeout(qrHideTimer);
+    var mdl = $('qrModal');
+    mdl.hidden = false;
+    requestAnimationFrame(function () { mdl.classList.add('show'); });
+    try { mdl.focus(); } catch (e) { /* noop */ }
+  }
+  function closeQr() {
+    var mdl = $('qrModal');
+    if (mdl.hidden) return;
+    mdl.classList.remove('show');
+    clearTimeout(qrHideTimer);
+    qrHideTimer = setTimeout(function () { mdl.hidden = true; }, 240);
+    try { $('qrBtn').focus(); } catch (e) { /* noop */ }
+  }
+  $('qrBtn').addEventListener('click', openQr);
+  $('qrModal').addEventListener('click', closeQr);
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') closeQr();
+  });
+
+  /* ── загрузка: /famas/k/<token> → /famas/api/key/<token>;
+     таймаут 15с, ретрай без перезагрузки, авто-ретрай при появлении сети ── */
   var m = location.pathname.match(/\/k\/([A-Za-z0-9_-]+)\/?$/);
   var token = m ? m[1] : '';
+  var rendered = false;
 
-  if (!token) {
-    show('notfound');
-  } else {
-    fetch('/famas/api/key/' + encodeURIComponent(token))
+  function load() {
+    if (rendered) return;
+    show('loading');
+    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var tmr = ctl ? setTimeout(function () { ctl.abort(); }, 15000) : null;
+    fetch('/famas/api/key/' + encodeURIComponent(token), {
+      cache: 'no-store',
+      signal: ctl ? ctl.signal : undefined
+    })
       .then(function (r) {
         if (r.status === 404) { var e = new Error('nf'); e.nf = true; throw e; }
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -685,12 +1040,28 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       })
       .then(function (d) {
         if (!d || !d.ok) { var e = new Error('nf'); e.nf = true; throw e; }
-        render(d);
+        render(d); /* rendered — только после успешного рендера, иначе «повторить» умрёт */
+        rendered = true;
       })
       .catch(function (e) {
-        if (e && e.nf) show('notfound');
-        else show('loaderr');
-      });
+        if (e && e.nf) {
+          document.title = 'FAMAS ⁂ ключ не найден';
+          show('notfound');
+        } else show('loaderr');
+      })
+      .then(function () { if (tmr) clearTimeout(tmr); });
+  }
+
+  $('btnReload').addEventListener('click', load);
+  window.addEventListener('online', function () {
+    if (!rendered && !$('loaderr').hidden) load();
+  });
+
+  if (!token) {
+    document.title = 'FAMAS ⁂ ключ не найден';
+    show('notfound');
+  } else {
+    load();
   }
 })();
 </script>

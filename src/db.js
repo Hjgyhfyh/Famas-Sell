@@ -183,7 +183,7 @@ function regionsSummary() {
     .map((r) => ({
       iso: r.iso,
       name: r.name || r.iso,
-      nameRu: util.COUNTRY_RU[r.name] || r.name || r.iso,
+      nameRu: util.nameRuOf(r.iso, r.name),
       flag: r.flag || (r.iso && r.iso !== 'XX' ? util.isoToFlag(r.iso) : ''),
       count: r.count,
     }))

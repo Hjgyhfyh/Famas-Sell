@@ -148,6 +148,96 @@ function findCountryInText(text) {
   return null;
 }
 
+/* ──────────────── Служебные метки (не страна) ──────────────── */
+
+// Anycast, Relay, CDN, WARP, Cloudflare и т.п. — это НЕ страна, а тип узла.
+const SERVICE_LABEL_RE =
+  /\b(?:any\s?cast|relay|cdn|warp|cloud\s?flare|g-?core|fastly|akamai|bunny(?:cdn)?|edge|proxy|tunnel|mirror|unknown|mixed|multi(?:-?hop)?|load\s?balanc|round\s?robin)\b|anycast-?ip/i;
+
+/** Похоже ли на осмысленный топоним (город/страна), а не служебная метка. */
+function isPlausiblePlace(s) {
+  const t = String(s == null ? '' : s).trim();
+  if (t.length < 2) return false;
+  if (SERVICE_LABEL_RE.test(t)) return false;
+  // только буквы и мягкие разделители — без цифр, скобок, слэшей
+  return /^[\p{L}][\p{L}\s.'’\-]*$/u.test(t);
+}
+
+/** Первый осмысленный «город» из сегментов (без флагов, [бейджей], (заметок), служебных слов). */
+function pickCity(segments) {
+  for (const raw of segments || []) {
+    const s = String(raw == null ? '' : raw)
+      .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, ' ') // regional-indicator символы (флаги)
+      .replace(/\[[^\]]*\]/g, ' ') // [BL]-бейджи
+      .replace(/\([^)]*\)/g, ' ') // (заметки)
+      .replace(/[^0-9A-Za-zА-Яа-яЁё .,'’\-]/gu, ' ') // прочие эмодзи/символы
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    if (!s) continue;
+    if (!/[A-Za-zА-Яа-яЁё]/.test(s)) continue;
+    if (SERVICE_LABEL_RE.test(s)) continue;
+    return s;
+  }
+  return '';
+}
+
+/* ──────────────── Русское имя страны по ISO ──────────────── */
+
+let _ruRegionDN; // ленивый Intl.DisplayNames
+let _ruRegionDNInit = false;
+const _ruRegionCache = new Map(); // ISO(upper) -> RU | '' (промах)
+
+function _ruRegionNames() {
+  if (!_ruRegionDNInit) {
+    _ruRegionDNInit = true;
+    try {
+      _ruRegionDN = new Intl.DisplayNames(['ru'], { type: 'region' });
+    } catch (e) {
+      _ruRegionDN = null;
+    }
+  }
+  return _ruRegionDN;
+}
+
+/**
+ * Русское имя страны с фолбэками.
+ * Приоритет (канон SPEC §3 — nameRu = COUNTRY_RU[name] || name — с расширенным фолбэком):
+ * 1) COUNTRY_RU[name] (name — EN-имя из фрагмента) — курируемые короткие имена владельца
+ *    (США, ОАЭ, ЮАР, Гонконг, Южная Корея…);
+ * 2) Intl.DisplayNames(['ru'],{type:'region'}).of(ISO) (кэш, try/catch) — для ISO вне COUNTRY_RU;
+ * 3) name (EN); 4) ISO.
+ * Intl НЕ должен перекрывать курируемые имена (иначе США→«Соединённые Штаты», ЮАР→«Южно-Африканская
+ * Республика», Гонконг→«Гонконг (САР)» — вразрез со SPEC §3 и §4-набором COUNTRY_RU).
+ */
+function nameRuOf(iso, name) {
+  const code = typeof iso === 'string' ? iso.trim().toUpperCase() : '';
+  // 1) курируемое имя из COUNTRY_RU по EN-имени
+  if (name && COUNTRY_RU[name]) return COUNTRY_RU[name];
+  // 2) Intl.DisplayNames по ISO — только для кодов, которых нет в курируемой карте
+  if (/^[A-Z]{2}$/.test(code) && code !== 'XX') {
+    let ru = '';
+    if (_ruRegionCache.has(code)) {
+      ru = _ruRegionCache.get(code);
+    } else {
+      const dn = _ruRegionNames();
+      if (dn) {
+        try {
+          const got = dn.of(code);
+          // Intl отдаёт сам код, если региона не знает — считаем это промахом
+          if (got && got !== code) ru = got;
+        } catch (e) {
+          ru = '';
+        }
+      }
+      _ruRegionCache.set(code, ru);
+    }
+    if (ru) return ru;
+  }
+  // 3) EN-имя как есть; 4) ISO
+  if (name) return String(name);
+  return code && code !== 'XX' ? code : 'XX';
+}
+
 /* ─────────────────────────── Флаги ─────────────────────────── */
 
 const RI_BASE = 0x1f1e6; // 🇦
@@ -286,9 +376,10 @@ function parseVlessLine(uri) {
       countryIso = flagToIso(flag) || 'XX';
     }
 
-    // остаток без флага; хвостовые бейджи | ... | отрезаем — берём первый сегмент до '|'
+    // остаток без флага; хвостовые бейджи | ... | режем на сегменты по '|'
     const noFlag = flag ? label.replace(flag, ' ') : label;
-    const firstSeg = (noFlag.split('|')[0] || '').trim();
+    const segments = noFlag.split('|').map((s) => s.trim());
+    const firstSeg = segments[0] || '';
 
     // 'Country, City (Note)' -> countryName / city
     let countryName = firstSeg;
@@ -311,6 +402,25 @@ function parseVlessLine(uri) {
       if (found) {
         countryIso = found.iso;
         countryName = found.name;
+      }
+    }
+
+    // Служебная метка вместо страны ('🌐 Anycast-IP | 🇨🇦 🇫🇮 | [BL]', Relay, CDN…):
+    // в первом сегменте нет запятой и не распознаётся страна — страну берём из флага/ISO,
+    // countryName из фрагмента (метку) не тащим в имя.
+    const segIsCountry =
+      comma !== -1 || !!COUNTRY_ISO[countryName] || !!findCountryInText(firstSeg);
+    if (!segIsCountry && (SERVICE_LABEL_RE.test(firstSeg) || countryIso !== 'XX')) {
+      if (countryIso && countryIso !== 'XX') {
+        // страна — из флага; город — второй осмысленный сегмент,
+        // либо сам первый, если он правдоподобный топоним (а не служебная метка)
+        countryName = ISO_TO_EN[countryIso] || '';
+        const city2 = pickCity(segments.slice(1));
+        city = city2 || (isPlausiblePlace(firstSeg) ? firstSeg : '');
+      } else {
+        // страну определить нельзя, а метка служебная — не засоряем именем
+        countryName = '';
+        city = '';
       }
     }
 
@@ -377,6 +487,7 @@ module.exports = {
   isoToFlag,
   COUNTRY_RU,
   COUNTRY_ISO,
+  nameRuOf,
   genToken,
   hashUri,
   esc,

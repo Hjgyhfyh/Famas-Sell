@@ -24,6 +24,7 @@
   /* ── состояние ───────────────────────────────────────────────── */
   var S = {
     regions: [],
+    regionsSig: '',     // подпись данных: тихий рефреш не трогает DOM без изменений
     price: 20,
     subDays: 30,
     total: 0,
@@ -37,7 +38,9 @@
     payBusy: false,
     successPage: '',
     pollTimer: null,
-    prevSum: 0
+    prevSum: 0,
+    sheetOpen: false,
+    ovlOpen: false
   };
 
   /* ── dom ─────────────────────────────────────────────────────── */
@@ -91,24 +94,41 @@
     if (d === 1) return one;
     return many;
   }
+  /* 1120 → «1 120» (тонкий пробел между разрядами) */
+  function fmtNum(n) {
+    return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  }
+  /* нормализация для поиска: регистр + ё→е */
+  function norm(s) {
+    return String(s || '').toLowerCase().replace(/ё/g, 'е');
+  }
   function isoFlag(iso) {
     try {
       iso = String(iso || '').toUpperCase();
-      if (!/^[A-Z]{2}$/.test(iso)) return '⁂';
+      if (!/^[A-Z]{2}$/.test(iso) || iso === 'XX') return '⁂';
       return String.fromCodePoint(0x1F1E6 + iso.charCodeAt(0) - 65, 0x1F1E6 + iso.charCodeAt(1) - 65);
     } catch (e) { return '⁂'; }
   }
   function flagChipHtml(iso, flag, small) {
     var lo = String(iso || 'xx').toLowerCase();
     var fb = flag || isoFlag(iso);
+    var w = small ? 27 : 34;
+    var h = small ? 21 : 26;
     return '<span class="flagchip' + (small ? ' sm' : '') + '">' +
-      '<img src="/famas/flags/' + esc(lo) + '.svg" alt="" loading="lazy">' +
+      '<img src="/famas/flags/' + esc(lo) + '.svg" alt="" width="' + w + '" height="' + h + '" loading="lazy" decoding="async" draggable="false">' +
       '<i class="flag-fb" hidden>' + esc(fb) + '</i></span>';
   }
   function haptic(kind) {
     try {
       if (tg && tg.HapticFeedback && typeof tg.HapticFeedback.impactOccurred === 'function') {
         tg.HapticFeedback.impactOccurred(kind || 'light');
+      }
+    } catch (e) { /* noop */ }
+  }
+  function hapticNotify(kind) {
+    try {
+      if (tg && tg.HapticFeedback && typeof tg.HapticFeedback.notificationOccurred === 'function') {
+        tg.HapticFeedback.notificationOccurred(kind || 'success');
       }
     } catch (e) { /* noop */ }
   }
@@ -162,6 +182,7 @@
       ta.setAttribute('readonly', '');
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
+      ta.style.fontSize = '16px'; /* iOS: <16px на фокусе зумит вьюпорт */
       document.body.appendChild(ta);
       ta.select();
       ta.setSelectionRange(0, ta.value.length);
@@ -226,7 +247,11 @@
     var glass = getGlass();
     elSeg.classList.toggle('dr', th === 'dracula');
     var btns = elSeg.querySelectorAll('.seg-btn');
-    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].getAttribute('data-th') === th);
+    for (var i = 0; i < btns.length; i++) {
+      var on = btns[i].getAttribute('data-th') === th;
+      btns[i].classList.toggle('active', on);
+      btns[i].setAttribute('aria-checked', on ? 'true' : 'false');
+    }
     elSwGlass.classList.toggle('on', glass);
     elSwGlass.setAttribute('aria-checked', glass ? 'true' : 'false');
   }
@@ -258,8 +283,22 @@
     } catch (e) { /* noop */ }
   }
 
+  /* ── кнопка «назад» Telegram + Escape: закрывают верхний слой ── */
+  function updateBackBtn() {
+    var need = S.sheetOpen || S.ovlOpen;
+    try {
+      if (tg && tg.BackButton) { if (need) tg.BackButton.show(); else tg.BackButton.hide(); }
+    } catch (e) { /* noop */ }
+  }
+  function closeTopLayer() {
+    if (S.sheetOpen) { closeSheet(); return true; }
+    if (S.ovlOpen) { hideSuccess(); return true; }
+    return false;
+  }
+
   /* ── bottom-sheet настроек ───────────────────────────────────── */
   function openSheet() {
+    S.sheetOpen = true;
     elSheetBack.hidden = false;
     elSheet.hidden = false;
     requestAnimationFrame(function () {
@@ -267,17 +306,74 @@
       elSheet.classList.add('in');
     });
     haptic('light');
+    updateBackBtn();
   }
   function closeSheet() {
+    S.sheetOpen = false;
     elSheetBack.classList.remove('in');
     elSheet.classList.remove('in');
     setTimeout(function () { elSheetBack.hidden = true; elSheet.hidden = true; }, 320);
+    updateBackBtn();
+  }
+
+  /* драг шита за ручку/свободную зону: тянется за пальцем, дальше 84px — закрытие */
+  var drag = { on: false, y0: 0, dy: 0 };
+  function sheetDragMove(ev) {
+    if (!drag.on) return;
+    drag.dy = Math.max(0, ev.clientY - drag.y0);
+    elSheet.style.transform = 'translateY(' + drag.dy + 'px)';
+    elSheetBack.style.opacity = String(Math.max(0, 1 - drag.dy / 260));
+  }
+  function sheetDragEnd() {
+    if (!drag.on) return;
+    drag.on = false;
+    var dy = drag.dy;
+    elSheet.classList.remove('drag');
+    if (dy > 84) {
+      requestAnimationFrame(function () {
+        elSheet.style.transform = '';
+        elSheetBack.style.opacity = '';
+        closeSheet();
+        haptic('light');
+      });
+    } else {
+      elSheet.style.transform = '';
+      elSheetBack.style.opacity = '';
+    }
+  }
+  function bindSheetDrag() {
+    if (!window.PointerEvent) return;
+    elSheet.addEventListener('pointerdown', function (ev) {
+      if (ev.target.closest('button, input')) return;
+      drag.on = true;
+      drag.y0 = ev.clientY;
+      drag.dy = 0;
+      elSheet.classList.add('drag');
+      try { elSheet.setPointerCapture(ev.pointerId); } catch (e) { /* noop */ }
+    });
+    elSheet.addEventListener('pointermove', sheetDragMove);
+    elSheet.addEventListener('pointerup', sheetDragEnd);
+    elSheet.addEventListener('pointercancel', sheetDragEnd);
   }
 
   /* ── регионы ─────────────────────────────────────────────────── */
   function jsonOrThrow(r) {
     if (!r.ok) { var e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
     return r.json();
+  }
+  /* fetch с таймаутом: зависший запрос не оставит скелетоны навсегда */
+  function fetchJson(url, opts, ms) {
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var t = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) { /* noop */ } }, ms || 12000) : null;
+    var o = opts || {};
+    if (ctl) o.signal = ctl.signal;
+    return fetch(url, o).then(function (r) {
+      if (t) clearTimeout(t);
+      return jsonOrThrow(r);
+    }, function (e) {
+      if (t) clearTimeout(t);
+      throw e;
+    });
   }
 
   function setTrust() {
@@ -297,17 +393,17 @@
 
   function skeletons() {
     var h = '';
-    for (var i = 0; i < 8; i++) h += '<div class="skel"></div>';
+    for (var i = 0; i < 9; i++) h += '<div class="skel gl"></div>';
     elGrid.innerHTML = h;
   }
 
   function visibleRegions() {
     if (!S.query) return S.regions;
-    var q = S.query.toLowerCase();
+    var q = norm(S.query);
     return S.regions.filter(function (r) {
-      return (r.nameRu || '').toLowerCase().indexOf(q) !== -1 ||
-             (r.name || '').toLowerCase().indexOf(q) !== -1 ||
-             (r.iso || '').toLowerCase().indexOf(q) !== -1;
+      return norm(r.nameRu).indexOf(q) !== -1 ||
+             norm(r.name).indexOf(q) !== -1 ||
+             norm(r.iso).indexOf(q) !== -1;
     });
   }
 
@@ -342,11 +438,15 @@
     if (doStagger) S.staggered = true;
   }
 
+  /* silent=true — тихий рефреш: без скелетонов, без плашек, DOM трогаем
+     только если данные реально изменились. Возвращает Promise<boolean>. */
   function loadRegions(silent) {
-    if (!silent) { skeletons(); hideNote(); }
-    elTrustText.textContent = 'загрузка…';
-    return fetch(API + '/regions')
-      .then(jsonOrThrow)
+    if (!silent) {
+      skeletons();
+      hideNote();
+      elTrustText.textContent = 'загрузка…';
+    }
+    return fetchJson(API + '/regions')
       .then(function (d) {
         if (!d.ok) throw new Error('bad payload');
         S.regions = d.regions || [];
@@ -354,6 +454,9 @@
         S.subDays = Number(d.subDays) || S.subDays;
         S.total = Number(d.total) || 0;
         S.updatedAt = d.updatedAt || 0;
+        var sig = JSON.stringify(S.regions);
+        var changed = sig !== S.regionsSig;
+        S.regionsSig = sig;
         // выброс исчезнувших регионов из выбора
         var live = {};
         S.regions.forEach(function (r) { live[r.iso] = true; });
@@ -365,18 +468,22 @@
         $('helpPrice').textContent = S.price;
         $('helpDays').textContent = S.subDays;
         // фильтр при >12 регионов
-        elSearchWrap.hidden = S.regions.length <= 12;
+        var needSearch = S.regions.length > 12;
+        elSearchWrap.hidden = !needSearch;
+        if (!needSearch && S.query) { S.query = ''; elSearchInput.value = ''; }
         setTrust();
-        renderRegions();
+        if (!silent || changed) renderRegions();
         updatePaybar(true);
+        return true;
       })
       .catch(function () {
         elTrustText.textContent = 'нет связи';
         if (!silent) {
           elGrid.innerHTML = '';
           showNote('сеть недоступна — не удалось загрузить регионы', true);
+          showErr('ошибка сети — проверь соединение');
         }
-        showErr('ошибка сети — проверь соединение');
+        return false;
       });
   }
 
@@ -394,17 +501,27 @@
     updatePaybar(false);
   }
 
+  /* синхронизация классов выбора без пересборки DOM (не сбрасывает hover/анимации) */
+  function refreshGridSel() {
+    var cards = elGrid.querySelectorAll('.region[data-iso]');
+    for (var i = 0; i < cards.length; i++) {
+      var on = !!S.sel[cards[i].getAttribute('data-iso')];
+      cards[i].classList.toggle('on', on);
+      cards[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+
   function selectAll() {
     S.regions.forEach(function (r) { S.sel[r.iso] = true; });
     S.selCount = Object.keys(S.sel).length;
-    renderRegions();
+    refreshGridSel();
     haptic('medium');
     updatePaybar(false);
   }
   function clearSel() {
     S.sel = {};
     S.selCount = 0;
-    renderRegions();
+    refreshGridSel();
     haptic('light');
     updatePaybar(false);
   }
@@ -413,15 +530,15 @@
   function animateSum(to) {
     var from = S.prevSum;
     S.prevSum = to;
-    if (from === to) { elPaySum.textContent = to + ' ⭐'; return; }
+    if (from === to) { elPaySum.textContent = fmtNum(to) + ' ⭐'; return; }
     var t0 = null;
-    var dur = 300;
+    var dur = 320;
     if (sumAnim) cancelAnimationFrame(sumAnim);
     function step(ts) {
       if (t0 === null) t0 = ts;
       var k = Math.min((ts - t0) / dur, 1);
       k = 1 - Math.pow(1 - k, 3); /* easeOutCubic */
-      elPaySum.textContent = Math.round(from + (to - from) * k) + ' ⭐';
+      elPaySum.textContent = fmtNum(from + (to - from) * k) + ' ⭐';
       if (k < 1) sumAnim = requestAnimationFrame(step);
     }
     sumAnim = requestAnimationFrame(step);
@@ -431,12 +548,17 @@
     var n = S.selCount;
     var total = n * S.price;
     elPayLine.textContent = 'ВЫБРАНО ' + n + ' · ИТОГО ' + n + '×' + S.price + ' ⭐';
-    if (instant) { S.prevSum = total; elPaySum.textContent = total + ' ⭐'; }
+    if (instant) { S.prevSum = total; elPaySum.textContent = fmtNum(total) + ' ⭐'; }
     else animateSum(total);
     elPayBtn.disabled = n === 0 || S.payBusy;
     var show = n > 0 && S.tab === 'shop';
     elPaybar.classList.toggle('show', show);
     document.body.classList.toggle('has-pay', show);
+    /* выбор не потеряется от случайного свайпа вниз */
+    try {
+      if (tg && n > 0 && typeof tg.enableClosingConfirmation === 'function') tg.enableClosingConfirmation();
+      else if (tg && n === 0 && typeof tg.disableClosingConfirmation === 'function') tg.disableClosingConfirmation();
+    } catch (e) { /* noop */ }
   }
 
   /* ── оплата ──────────────────────────────────────────────────── */
@@ -452,12 +574,16 @@
     var regions = Object.keys(S.sel);
     setPayBusy(true);
     haptic('medium');
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var t = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) { /* noop */ } }, 15000) : null;
     fetch(API + '/order', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: initData, regions: regions })
+      body: JSON.stringify({ initData: initData, regions: regions }),
+      signal: ctl ? ctl.signal : undefined
     })
       .then(function (r) {
+        if (t) clearTimeout(t);
         return r.json().catch(function () { return {}; }).then(function (d) {
           if (!r.ok || !d.ok || !d.invoiceLink) throw new Error((d && d.error) || ('HTTP ' + r.status));
           return d;
@@ -468,13 +594,14 @@
         if (typeof tg.openInvoice === 'function') {
           tg.openInvoice(d.invoiceLink, function (status) {
             if (status === 'paid') {
-              haptic('heavy');
+              hapticNotify('success');
               clearSel();
               S.orders = null;
               showSuccess();
             } else if (status === 'cancelled') {
               toast('оплата отменена');
             } else if (status === 'failed') {
+              hapticNotify('error');
               showErr('оплата не прошла — попробуй ещё раз');
             } else {
               toast('платёж обрабатывается…');
@@ -486,6 +613,7 @@
         }
       })
       .catch(function () {
+        if (t) clearTimeout(t);
         setPayBusy(false);
         showErr('не удалось создать счёт — попробуй ещё раз');
       });
@@ -493,8 +621,7 @@
 
   /* ── экран успеха ────────────────────────────────────────────── */
   function fetchMe() {
-    return fetch(API + '/me?initData=' + encodeURIComponent(initData))
-      .then(jsonOrThrow)
+    return fetchJson(API + '/me?initData=' + encodeURIComponent(initData))
       .then(function (d) {
         if (!d.ok) throw new Error('bad payload');
         return d.orders || [];
@@ -503,17 +630,21 @@
 
   function showSuccess() {
     S.successPage = '';
+    S.ovlOpen = true;
     var btn = $('btnOpenKey');
     btn.disabled = true;
     btn.textContent = 'ПОЛУЧАЕМ ССЫЛКУ…';
     elOvl.hidden = false;
     requestAnimationFrame(function () { elOvl.classList.add('in'); });
+    updateBackBtn();
     pollSuccessPage(0);
   }
   function hideSuccess() {
+    S.ovlOpen = false;
     elOvl.classList.remove('in');
     setTimeout(function () { elOvl.hidden = true; }, 260);
     if (S.pollTimer) { clearTimeout(S.pollTimer); S.pollTimer = null; }
+    updateBackBtn();
   }
   function pollSuccessPage(attempt) {
     if (!initData) { readySuccessBtn(); return; }
@@ -587,7 +718,7 @@
       elKeys.innerHTML = emptyKeysHtml('открой мини-апп из Telegram, чтобы видеть свои ключи', false);
       return;
     }
-    elKeys.innerHTML = '<div class="skel" style="margin-bottom:12px"></div><div class="skel"></div>';
+    elKeys.innerHTML = '<div class="skel skel-key gl"></div><div class="skel skel-key gl"></div>';
     fetchMe()
       .then(function (orders) { S.orders = orders; renderKeys(); })
       .catch(function () {
@@ -599,10 +730,14 @@
   /* ── вкладки ─────────────────────────────────────────────────── */
   var TAB_IDX = { shop: 0, keys: 1, help: 2 };
   function switchTab(name) {
-    if (!TAB_IDX.hasOwnProperty(name)) return;
+    if (!TAB_IDX.hasOwnProperty(name) || S.tab === name) return;
     S.tab = name;
     var panes = { shop: $('tab-shop'), keys: $('tab-keys'), help: $('tab-help') };
     Object.keys(panes).forEach(function (k) { panes[k].hidden = k !== name; });
+    var pane = panes[name];
+    pane.classList.remove('enter');
+    void pane.offsetWidth; /* перезапуск анимации входа */
+    pane.classList.add('enter');
     var btns = document.querySelectorAll('.tabbtn');
     for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].getAttribute('data-tab') === name);
     elTabInd.style.transform = 'translateX(' + (TAB_IDX[name] * 100) + '%)';
@@ -610,6 +745,27 @@
     if (name === 'keys') loadKeys();
     updatePaybar(true);
     haptic('light');
+  }
+
+  /* ── аккордеон: высота меряется в px — изинг честный, без прыжка ── */
+  var ACC_MS = 320;
+  function setAcc(item, open) {
+    var p = item.querySelector('.acc-panel');
+    var btn = item.querySelector('.acc-btn');
+    if (!p) return;
+    if (open) {
+      item.classList.add('open');
+      p.style.maxHeight = p.scrollHeight + 'px';
+      setTimeout(function () {
+        if (item.classList.contains('open')) p.style.maxHeight = 'none';
+      }, ACC_MS);
+    } else {
+      p.style.maxHeight = p.scrollHeight + 'px';
+      void p.offsetHeight; /* фиксируем стартовую высоту перед схлопыванием */
+      item.classList.remove('open');
+      p.style.maxHeight = '0px';
+    }
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
   /* ── обработчики ─────────────────────────────────────────────── */
@@ -625,17 +781,39 @@
       var card = ev.target.closest('.region');
       if (card && card.hasAttribute('data-iso')) toggleRegion(card.getAttribute('data-iso'));
     });
+    /* stagger — только один раз: после проигрыша снимаем класс и delay,
+       иначе display-переключение вкладок перезапускало бы анимацию */
+    elGrid.addEventListener('animationend', function (ev) {
+      var t = ev.target;
+      if (t.classList && t.classList.contains('region')) {
+        t.classList.remove('in');
+        t.style.animationDelay = '';
+      }
+    });
     $('btnAll').addEventListener('click', selectAll);
     $('btnClr').addEventListener('click', clearSel);
     elRetry.addEventListener('click', function () { loadRegions(false); });
-    $('trustLine').addEventListener('click', function () {
-      loadRegions(true).then(function () { toast('обновлено'); });
+    function trustRefresh() {
+      haptic('light');
+      loadRegions(true).then(function (ok) {
+        if (ok) toast('обновлено');
+        else showErr('ошибка сети — проверь соединение');
+      });
+    }
+    $('trustLine').addEventListener('click', trustRefresh);
+    $('trustLine').addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); trustRefresh(); }
     });
 
-    /* поиск */
-    elSearchInput.addEventListener('input', function () {
+    /* поиск (input + нативный крестик type=search) */
+    function onQuery() {
       S.query = elSearchInput.value.trim();
       renderRegions();
+    }
+    elSearchInput.addEventListener('input', onQuery);
+    elSearchInput.addEventListener('search', onQuery);
+    elSearchInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') elSearchInput.blur();
     });
 
     /* оплата */
@@ -655,7 +833,14 @@
         if (sub) copyText(sub); else showErr('ссылка недоступна');
       }
     });
-    $('btnReloadKeys').addEventListener('click', function () { haptic('light'); loadKeys(); });
+    $('btnReloadKeys').addEventListener('click', function () {
+      var b = this;
+      b.classList.remove('spin');
+      void b.offsetWidth; /* перезапуск оборота иконки */
+      b.classList.add('spin');
+      haptic('light');
+      loadKeys();
+    });
 
     /* успех */
     $('btnOpenKey').addEventListener('click', function () {
@@ -673,8 +858,8 @@
       var btn = ev.target.closest('.acc-btn');
       if (!btn) return;
       var item = btn.parentNode;
-      var open = item.classList.toggle('open');
-      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      setAcc(item, !item.classList.contains('open'));
+      haptic('light');
     });
     $('btnSupport').addEventListener('click', function () { openTgLink(SUPPORT_URL); });
 
@@ -691,6 +876,17 @@
       setGlass(!getGlass(), true, true);
       haptic('light');
     });
+    bindSheetDrag();
+
+    /* «назад» Telegram и Escape закрывают верхний слой (шит/успех) */
+    try {
+      if (tg && tg.BackButton && typeof tg.BackButton.onClick === 'function') {
+        tg.BackButton.onClick(closeTopLayer);
+      }
+    } catch (e) { /* noop */ }
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') closeTopLayer();
+    });
   }
 
   /* ── старт ───────────────────────────────────────────────────── */
@@ -699,8 +895,18 @@
     syncPrefControls();
     loadPrefsFromCloud();
     bind();
+    /* открытый по умолчанию пункт аккордеона — без ограничения высоты */
+    var openPanels = document.querySelectorAll('.acc-item.open .acc-panel');
+    for (var i = 0; i < openPanels.length; i++) openPanels[i].style.maxHeight = 'none';
     loadRegions(false);
     updatePaybar(true);
+    /* живая строка доверия: тихий рефреш раз в 2 минуты + при возврате в апп */
+    setInterval(function () {
+      if (document.visibilityState === 'visible') loadRegions(true);
+    }, 120000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') loadRegions(true);
+    });
   }
 
   init();

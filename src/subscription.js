@@ -34,7 +34,8 @@ function safeParseRegions(val) {
 
 /** переписать фрагмент uri на брендовый: FAMAS ⁂ <флаг> <СтранаRu> · <Город> */
 function rebrandUri(row) {
-  const ruName = util.COUNTRY_RU[row.country_name] || row.country_name || '';
+  const ruNameRaw = util.nameRuOf(row.country_iso, row.country_name);
+  const ruName = ruNameRaw && ruNameRaw !== 'XX' ? ruNameRaw : '';
   const flag =
     row.flag || (row.country_iso && row.country_iso !== 'XX' ? util.isoToFlag(row.country_iso) : '');
   let label = 'FAMAS ⁂';

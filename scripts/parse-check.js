@@ -59,7 +59,7 @@ for (const c of configs) {
   if (!row) {
     row = {
       iso: c.countryIso,
-      nameRu: util.COUNTRY_RU[c.countryName] || c.countryName || c.countryIso,
+      nameRu: util.nameRuOf(c.countryIso, c.countryName),
       count: 0,
     };
     byIso.set(c.countryIso, row);
