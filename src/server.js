@@ -184,13 +184,15 @@ function isOrderActive(order, now) {
   );
 }
 
-/** Конфиги, которые попадут в подписку заказа: активные + fallback (ровно как buildSub §6). */
-function subConfigsSafe(isos, where) {
+/** Конфиги, которые попадут в подписку заказа: активные + fallback (ровно как buildSub §6).
+ * SPEC-SOURCES §4.4: listType (дефолт 'black') — пул заказа; старые заказы = black (совместимо). */
+function subConfigsSafe(isos, where, listType) {
   if (!Array.isArray(isos) || isos.length === 0) return [];
+  const lt = listType === 'white' ? 'white' : 'black';
   let main = [];
   let fb = [];
   try {
-    main = db.configsForRegions(isos) || [];
+    main = db.configsForRegions(isos, lt) || [];
   } catch (e) {
     logErr(where + '/configsForRegions', e);
   }
@@ -328,14 +330,18 @@ function createServer(botApi) {
 
   app.use(express.json({ limit: '64kb' }));
 
-  /* GET /famas/api/regions — витрина: регионы, цена, срок, всего серверов. */
+  /* GET /famas/api/regions — витрина: регионы, цена, срок, всего серверов.
+   * SPEC-SOURCES §4.4/§7: ?list=black|white (дефолт black) — витрина по категории пула.
+   * Вкладку white в UI добавим позже; здесь — только бэкенд-поддержка listType. */
   app.get('/famas/api/regions', function (req, res) {
-    const regions = db.regionsSummary() || [];
+    const list = req.query && req.query.list === 'white' ? 'white' : 'black';
+    const regions = db.regionsSummary(list) || [];
     let total = 0;
     for (const r of regions) total += Number(r.count) || 0;
     const lr = inventory.lastRefresh || null;
     res.json({
       ok: true,
+      list, // из какого пула витрина (black|white)
       regions, // каждый регион уже с popularity (regionsSummary, SPEC-QTY §3/§4)
       price: db.priceStars(),
       extra: db.extraStars(), // доплата за доп. сервер (SPEC-QTY §6)
@@ -542,12 +548,13 @@ function createServer(botApi) {
     const now = nowSec();
     const orders = rows.map(function (o) {
       const regions = orderRegions(o);
+      const lt = o.list_type === 'white' ? 'white' : 'black'; // пул заказа (SPEC-SOURCES §4.4)
       const qty = orderQty(o); // SPEC-QTY §6: servers = Σqty (для новых) / configs len (старых)
-      const servers = qty ? sumQty(qty) : subConfigsSafe(regions, 'me').length;
+      const servers = qty ? sumQty(qty) : subConfigsSafe(regions, 'me', lt).length;
       // SPEC-HARDEN ч.1 §5: доступно живых сейчас (Σ по регионам min(qty, aliveCount)).
       let serversAvailable = servers;
       try {
-        const alive = db.aliveCountForRegions(regions);
+        const alive = db.aliveCountForRegions(regions, lt);
         let a = 0;
         for (const iso of regions) {
           const av = Number(alive.get(iso)) || 0;
@@ -610,8 +617,9 @@ function createServer(botApi) {
     }
 
     const isos = orderRegions(order);
+    const lt = order.list_type === 'white' ? 'white' : 'black'; // пул заказа (SPEC-SOURCES §4.4)
     const qty = orderQty(order); // SPEC-QTY §6: count = купленное qty (для старых — available)
-    const rows = subConfigsSafe(isos, 'key');
+    const rows = subConfigsSafe(isos, 'key', lt);
 
     // Число серверов на регион по фактически выданным конфигам (для старых заказов).
     const countByIso = new Map();
@@ -627,10 +635,10 @@ function createServer(botApi) {
       logErr('key/regionsSummary', e);
     }
 
-    // SPEC-HARDEN ч.1 §5: число ДОСТУПНЫХ (живых) серверов по регионам сейчас.
+    // SPEC-HARDEN ч.1 §5: число ДОСТУПНЫХ (живых) серверов по регионам сейчас (пул заказа).
     const aliveCount = (() => {
       try {
-        return db.aliveCountForRegions(isos);
+        return db.aliveCountForRegions(isos, lt);
       } catch (e) {
         logErr('key/aliveCountForRegions', e);
         return new Map();

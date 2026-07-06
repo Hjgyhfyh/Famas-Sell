@@ -18,6 +18,7 @@
     "better-sqlite3": "^11.10.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "geoip-lite": "^1.4.10",
     "grammy": "^1.36.1",
     "qrcode": "^1.5.4"
   }

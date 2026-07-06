@@ -4,13 +4,26 @@
  * SPEC §5: start(), refreshNow(), lastRefresh. Ошибки сети процесс НЕ роняют.
  */
 const fs = require('node:fs');
+const path = require('node:path');
 const net = require('node:net');
+const dns = require('node:dns').promises;
 const crypto = require('node:crypto');
 const config = require('./config');
 const db = require('./db');
 const util = require('./util');
 
+// SPEC-SOURCES §6: geoip-lite опционален. Если не установлен/не грузится — GEO_ENABLED игнорируется
+// (регионы по флагу как раньше). Грузим один раз, мягко.
+let geoip = null;
+try {
+  geoip = require('geoip-lite');
+} catch (e) {
+  geoip = null;
+}
+
 const FETCH_TIMEOUT_MS = 30000;
+// SPEC-SOURCES §1.3: пул загрузки источников (concurrency ~6).
+const SOURCE_FETCH_CONCURRENCY = 6;
 
 // SPEC-QUALITY §4: сейфгард — если недоступных больше этой доли от проверенных
 // (вероятный сетевой сбой на VDS/резолвере), TCP-результаты прогона НЕ применяем.
@@ -142,11 +155,13 @@ async function runHealthcheck() {
       }
     }
 
-    // 2) TCP-живость
+    // 2) TCP-живость (SPEC-SOURCES §5.2: ротационный батч — самые давно проверенные первыми;
+    //    при масштабе ~56k хостов полный свип набирается за несколько циклов. На малом источнике
+    //    (<HEALTHCHECK_BATCH хостов) берётся всё разом — как раньше.)
     if (config.HEALTHCHECK_ENABLED) {
       let hosts = [];
       try {
-        hosts = db.hostsToCheck();
+        hosts = db.hostsToCheck(config.HEALTHCHECK_BATCH);
       } catch (e) {
         hosts = [];
       }
@@ -222,7 +237,285 @@ async function runHealthcheckGuarded() {
   }
 }
 
+/* ─────────────── SPEC-SOURCES §6: гео-обогащение по IP ─────────────── */
+
+let geoInflight = false;
+
+/** host → ISO страны через geoip. Домен резолвим (dns), IP — напрямую. null если не вышло. */
+async function geoLookupHost(host) {
+  if (!geoip) return null;
+  let ip = null;
+  if (net.isIP(host)) {
+    ip = host;
+  } else {
+    try {
+      const a = await dns.resolve4(host);
+      if (a && a.length) ip = a[0];
+    } catch (e) {
+      // нет A-записи — попробуем AAAA
+    }
+    if (!ip) {
+      try {
+        const a6 = await dns.resolve6(host);
+        if (a6 && a6.length) ip = a6[0];
+      } catch (e) {
+        // нет AAAA — гео не выйдет
+      }
+    }
+  }
+  if (!ip) return null;
+  try {
+    const g = geoip.lookup(ip);
+    return g && g.country ? String(g.country).toUpperCase() : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Отдельный enrich-пасс (SPEC-SOURCES §6.2): заполняет страну только у XX-хостов, пулом
+ * DNS-резолва. НЕ блокирует upsert, ошибки глотает. No-op при GEO_ENABLED=0 или отсутствии geoip.
+ */
+async function runGeoEnrich() {
+  if (!config.GEO_ENABLED || !geoip) return;
+  let hosts = [];
+  try {
+    hosts = db.hostsForGeo(config.GEO_BATCH);
+  } catch (e) {
+    hosts = [];
+  }
+  if (!hosts.length) return;
+  const conc = Math.max(1, Number(config.GEO_CONCURRENCY) || 32);
+  await runPool(hosts, conc, async (h) => {
+    let iso = null;
+    try {
+      iso = await geoLookupHost(h);
+    } catch (e) {
+      iso = null;
+    }
+    try {
+      db.setGeo(h, iso); // iso null → только отметка geo_checked_at (не долбим DNS повторно)
+    } catch (e) {
+      // одна запись не роняет пасс
+    }
+    return true;
+  });
+  try {
+    db.logEvent('geo_enrich', { checked: hosts.length });
+  } catch (e) {
+    // журнал не критичен
+  }
+}
+
+/** Single-flight обёртка гео-пасса (не накладывается сам на себя). Ошибки уже проглочены. */
+async function runGeoEnrichGuarded() {
+  if (geoInflight) return false;
+  geoInflight = true;
+  try {
+    await runGeoEnrich();
+    return true;
+  } finally {
+    geoInflight = false;
+  }
+}
+
+/* ─────────────── SPEC-SOURCES §1: мультиисточниковая загрузка ─────────────── */
+
+/** Каталог per-source last-good кэша (data/cache/). */
+function cacheDir() {
+  return path.join(path.dirname(path.resolve(config.DB_PATH)), 'cache');
+}
+/** Путь кэша источника (id может содержать '/', поэтому encodeURIComponent). */
+function cachePath(id) {
+  return path.join(cacheDir(), encodeURIComponent(String(id)) + '.txt');
+}
+function readCache(id) {
+  try {
+    return fs.readFileSync(cachePath(id), 'utf8');
+  } catch (e) {
+    return null;
+  }
+}
+function writeCache(id, text) {
+  try {
+    fs.mkdirSync(cacheDir(), { recursive: true });
+    fs.writeFileSync(cachePath(id), text);
+  } catch (e) {
+    // кэш best-effort — не критично
+  }
+}
+
+/**
+ * Один заход за источником с conditional GET (ETag/Last-Modified из settings, ключи etag:<id>/
+ * lastmod:<id>). 304 → {ok, status:304} (тело берём из кэша выше). file: → чтение с диска.
+ */
+async function fetchSourceOnce(s) {
+  if (String(s.url).startsWith('file:')) {
+    try {
+      return { ok: true, status: 200, text: fs.readFileSync(filePathFromUrl(s.url), 'utf8') };
+    } catch (e) {
+      return { ok: false, status: 0, error: String((e && e.message) || e) };
+    }
+  }
+  const etag = db.getSetting('etag:' + s.id, '') || '';
+  const lastmod = db.getSetting('lastmod:' + s.id, '') || '';
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  const headers = { 'user-agent': 'famas-shop/1.0' };
+  if (etag) headers['if-none-match'] = etag;
+  if (lastmod) headers['if-modified-since'] = lastmod;
+  try {
+    const res = await fetch(s.url, { signal: ctrl.signal, redirect: 'follow', headers });
+    if (res.status === 304) return { ok: true, status: 304 };
+    if (!res.ok) return { ok: false, status: res.status, error: 'HTTP ' + res.status };
+    const text = await res.text();
+    const ne = res.headers.get('etag');
+    const nl = res.headers.get('last-modified');
+    if (ne) db.setSetting('etag:' + s.id, ne);
+    if (nl) db.setSetting('lastmod:' + s.id, nl);
+    return { ok: true, status: 200, text };
+  } catch (e) {
+    return {
+      ok: false,
+      status: 0,
+      error: e && e.name === 'AbortError' ? 'timeout' : String((e && e.message) || e),
+    };
+  } finally {
+    clearTimeout(to);
+  }
+}
+
+/** fetchSourceOnce + 1 ретрай (SPEC-SOURCES §1.3). 304 не ретраим (это успех). */
+async function fetchSource(s) {
+  let r = await fetchSourceOnce(s);
+  if (!r.ok && r.status !== 304) r = await fetchSourceOnce(s);
+  return r;
+}
+
+/**
+ * SPEC-SOURCES §1: мультиисточниковый refresh. Тянем все enabled-источники пулом (conditional GET),
+ * стриминговым merge (util.mergeInto) собираем ОДИН Map<hash,best> → один upsertConfigs(map.values()).
+ * КРИТИЧНО (§7 риск#1): реконсиляцию (деактивацию отсутствующих) выполняем ТОЛЬКО если ВСЕ источники
+ * отдали 200/304; при сбое любого — reconcile:false + берём last-good кэш (каталог не обнуляем).
+ */
+async function doRefreshMulti() {
+  try {
+    const sources = (config.SOURCES || []).filter((s) => s && s.enabled !== false && s.url);
+    if (!sources.length) throw new Error('нет включённых источников (SOURCES пуст)');
+
+    const results = await runPool(sources, SOURCE_FETCH_CONCURRENCY, (s) => fetchSource(s));
+
+    const map = new Map();
+    let allOk = true;
+    let ok200 = 0;
+    let ok304 = 0;
+    let failed = 0;
+    let usedCache = 0;
+    let dropped = 0;
+
+    for (let i = 0; i < sources.length; i++) {
+      const s = sources[i];
+      const r = results[i] || { ok: false, status: 0 };
+      let text = null;
+      if (r.ok && r.status === 200 && typeof r.text === 'string') {
+        text = r.text;
+        writeCache(s.id, text); // обновляем last-good
+        ok200++;
+      } else if (r.ok && r.status === 304) {
+        text = readCache(s.id); // не изменилось — берём last-good
+        if (text != null) usedCache++;
+        ok304++;
+      } else {
+        // сбой источника: НЕ реконсилируем этот цикл + мержим last-good (каталог не обнуляем)
+        allOk = false;
+        failed++;
+        text = readCache(s.id);
+        if (text != null) usedCache++;
+        try {
+          db.logEvent('source_fail', { id: s.id, status: r.status, error: r.error || null });
+        } catch (e) {
+          // журнал не критичен
+        }
+      }
+      if (text != null && text !== '') {
+        const st = util.mergeInto(map, text, {
+          category: s.category === 'white' ? 'white' : 'black',
+          includeUuid: config.DEDUP_INCLUDE_UUID,
+          allow: config.ALLOWED_PROTOCOLS,
+        });
+        dropped += st.dropped;
+      }
+    }
+
+    const merged = [...map.values()];
+    map.clear();
+    if (!merged.length) throw new Error('мультиисточник: 0 конфигов после merge');
+
+    // Реконсиляция ТОЛЬКО при полном успехе всех источников (SPEC-SOURCES §7 риск#1).
+    const r = db.upsertConfigs(merged, { reconcile: allOk });
+
+    await runHealthcheckGuarded();
+    await runGeoEnrichGuarded();
+
+    let alive = 0;
+    try {
+      alive = db.aliveStats().alive;
+    } catch (e) {
+      alive = 0;
+    }
+    const regions = db.regionsSummary().length;
+
+    lastRefresh.at = nowSec();
+    lastRefresh.ok = true;
+    lastRefresh.total = r.total;
+    lastRefresh.alive = alive;
+    lastRefresh.error = null;
+
+    const out = {
+      ok: true,
+      total: r.total,
+      alive,
+      added: r.added,
+      revived: r.revived,
+      deactivated: r.deactivated,
+      regions,
+      sources: sources.length,
+      ok200,
+      ok304,
+      failed,
+      usedCache,
+      dropped,
+      unique: merged.length,
+      reconciled: allOk,
+    };
+    db.logEvent('refresh', out);
+    return out;
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    lastRefresh.at = nowSec();
+    lastRefresh.ok = false;
+    lastRefresh.error = msg;
+    // total не трогаем — оставляем последнее удачное
+    try {
+      db.logEvent('refresh', { ok: false, error: msg, multi: true });
+    } catch (e2) {
+      // журнал не критичен
+    }
+    console.error(`[${new Date().toISOString()}] inventory: ошибка мультиобновления: ${msg}`);
+    return { ok: false, error: msg };
+  }
+}
+
+/**
+ * Диспетчер обновления (SPEC-SOURCES §1.2): MULTI_SOURCE=1 → мультиисточник; иначе (дефолт) —
+ * старый одиночный путь от SOURCE_URL (обратная совместимость: поведение ровно как раньше).
+ */
 async function doRefresh() {
+  if (config.MULTI_SOURCE) return doRefreshMulti();
+  return doRefreshSingle();
+}
+
+async function doRefreshSingle() {
   try {
     const text = await loadSourceText();
     const bodyHash = crypto.createHash('sha256').update(text, 'utf8').digest('hex');
@@ -244,7 +537,13 @@ async function doRefresh() {
     }
 
     if (!skipped) {
-      const { configs } = util.parseSource(text);
+      // Одиночный источник — чёрный vless-список. parseSource с новым host:port-дедупом
+      // (SPEC-SOURCES §3.2) и фильтром протоколов; флаги по дефолту эквивалентны прежнему поведению.
+      const { configs } = util.parseSource(text, {
+        category: 'black',
+        includeUuid: config.DEDUP_INCLUDE_UUID,
+        allow: config.ALLOWED_PROTOCOLS,
+      });
       if (!configs.length) throw new Error('источник пуст: 0 конфигов после парсинга');
       const r = db.upsertConfigs(configs);
       added = r.added;
@@ -258,6 +557,8 @@ async function doRefresh() {
     // источнике — сервер мог отвалиться с прошлой проверки). Не роняет процесс.
     // SPEC-HARDEN ч.1 §2: через guarded — не накладывается на периодический прогон.
     await runHealthcheckGuarded();
+    // SPEC-SOURCES §6: гео-обогащение. No-op при GEO_ENABLED=0 (дефолт) — одиночный путь без изменений.
+    await runGeoEnrichGuarded();
 
     let alive = 0;
     try {

@@ -72,12 +72,15 @@ function buildSub(order) {
 
   let lines = [];
   if (!expired) {
+    // SPEC-SOURCES §4.4/§6: подписка собирается из ПУЛА заказа (order.list_type, дефолт 'black').
+    // Старые заказы без колонки → 'black' (обратная совместимость).
+    const listType = order.list_type === 'white' ? 'white' : 'black';
     // SPEC-QTY §5: заказ с qty → РОВНО купленное число серверов на регион (стабильно
     // по hash + добор fallback). Старый заказ (qty IS NULL) → прежний путь: все серверы.
     const qty = safeParseQty(order.qty);
     const rows = qty
-      ? db.configsForRegionsQty(qty)
-      : db.configsForRegions(regions).concat(db.fallbackForRegions(regions));
+      ? db.configsForRegionsQty(qty, listType)
+      : db.configsForRegions(regions, listType).concat(db.fallbackForRegions(regions));
     lines = rows.map(rebrandUri);
   }
 

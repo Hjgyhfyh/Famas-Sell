@@ -102,6 +102,142 @@ function migrate() {
   if (!columnExists('orders', 'bonus_applied')) {
     db.exec('ALTER TABLE orders ADD COLUMN bonus_applied INTEGER DEFAULT 0');
   }
+
+  // ── SPEC-SOURCES §4/§5/§6: категория списка, ротация healthcheck, гео ──
+  // list_type конфига: 'black' (файлы 1..25) | 'white' (файл 26 — РФ-whitelist). DEFAULT 'black'
+  // → все существующие строки становятся black, продажа/выдача по-старому (обратная совместимость).
+  if (!columnExists('configs', 'list_type')) {
+    db.exec("ALTER TABLE configs ADD COLUMN list_type TEXT DEFAULT 'black'");
+  }
+  // Заказ помнит, из какого пула собирать подписку (buildSub читает order.list_type).
+  if (!columnExists('orders', 'list_type')) {
+    db.exec("ALTER TABLE orders ADD COLUMN list_type TEXT DEFAULT 'black'");
+  }
+  // Время последней TCP-проверки (для ротации: самые давно проверенные — первыми). NULL = никогда.
+  if (!columnExists('configs', 'alive_checked_at')) {
+    db.exec('ALTER TABLE configs ADD COLUMN alive_checked_at INTEGER');
+  }
+  // Время последнего гео-обогащения (чтобы не резолвить один хост повторно). NULL = не пробовали.
+  if (!columnExists('configs', 'geo_checked_at')) {
+    db.exec('ALTER TABLE configs ADD COLUMN geo_checked_at INTEGER');
+  }
+  // Индекс под выборку каталога с учётом list_type (SPEC-SOURCES §4.3).
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_configs_region2 ON configs(list_type, country_iso, active, alive)'
+  );
+
+  // Разовая collapse+rehash-миграция старых строк на новый hash=sha256(host:port) (SPEC-SOURCES §3.4).
+  migrateRehashConfigs();
+}
+
+/**
+ * SPEC-SOURCES §3.4: разовая идемпотентная миграция существующих строк configs на новый
+ * hash = sha256(canonicalKey) (раньше hash = sha256(uri)). Без неё первый мультиисточниковый
+ * refresh массово деактивировал бы старые строки и вставлял новые (шумно). Миграция:
+ *   1) гейт по settings-маркеру + пустой таблице (идемпотентность);
+ *   2) копия БД перед деструктивной операцией (быстрый откат, SPEC-SOURCES §7);
+ *   3) группировка всех строк по НОВОМУ hash; в каждой группе оставляем одну (max last_seen →
+ *      active → alive → id), лишние удаляем (разрешение коллизии UNIQUE); хэши проставляем в два
+ *      прохода (сначала временные, потом финальные) — чтобы не ловить транзиентный UNIQUE-конфликт.
+ * Любой сбой не роняет старт: маркер не ставится, схема продолжает работать на старых хэшах.
+ */
+function migrateRehashConfigs() {
+  try {
+    if (getSetting('configs_rehash_v2', '') === '1') return; // уже мигрировано
+  } catch (e) {
+    return; // settings недоступны — отложим (в след. раз)
+  }
+
+  let count = 0;
+  try {
+    count = Number(stmt('SELECT COUNT(*) AS c FROM configs').get().c) || 0;
+  } catch (e) {
+    return;
+  }
+  if (count === 0) {
+    // пустая БД (тесты/чистый старт): новые вставки уже используют новый hash — просто помечаем.
+    try { setSetting('configs_rehash_v2', '1'); } catch (e) { /* не критично */ }
+    return;
+  }
+
+  const includeUuid = !!config.DEDUP_INCLUDE_UUID;
+
+  // Нужна ли работа? Если у всех строк hash уже == configHash(uri) — просто пометить.
+  let rows;
+  try {
+    rows = stmt('SELECT id, hash, uri, host, port, active, alive, last_seen FROM configs').all();
+  } catch (e) {
+    return;
+  }
+  let needWork = false;
+  const groups = new Map(); // newHash -> [row,...]
+  for (const r of rows) {
+    let nh;
+    try {
+      nh = util.configHash(r.uri, includeUuid);
+    } catch (e) {
+      nh = null;
+    }
+    if (!nh) nh = r.hash; // не смогли пересчитать — оставляем как есть
+    if (nh !== r.hash) needWork = true;
+    let arr = groups.get(nh);
+    if (!arr) {
+      arr = [];
+      groups.set(nh, arr);
+    } else {
+      needWork = true; // коллизия по новому ключу → есть что схлопывать
+    }
+    arr.push(r);
+  }
+  if (!needWork) {
+    try { setSetting('configs_rehash_v2', '1'); } catch (e) { /* не критично */ }
+    return;
+  }
+
+  // Копия БД перед деструктивной миграцией (best-effort). Чекпойнт WAL для консистентной копии.
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    const dbFile = path.resolve(config.DB_PATH);
+    if (fs.existsSync(dbFile)) {
+      fs.copyFileSync(dbFile, dbFile + '.bak-rehash-' + Date.now());
+    }
+  } catch (e) {
+    console.error('[db] rehash: не удалось сделать копию БД (продолжаю): ' + ((e && e.message) || e));
+  }
+
+  const setHash = stmt('UPDATE configs SET hash=? WHERE id=?');
+  const del = stmt('DELETE FROM configs WHERE id=?');
+  const tx = db.transaction(() => {
+    const keepers = [];
+    for (const [nh, list] of groups) {
+      list.sort(
+        (a, b) =>
+          (Number(b.last_seen) || 0) - (Number(a.last_seen) || 0) ||
+          (Number(b.active) || 0) - (Number(a.active) || 0) ||
+          (Number(b.alive) || 0) - (Number(a.alive) || 0) ||
+          (Number(b.id) || 0) - (Number(a.id) || 0)
+      );
+      const keeper = list[0];
+      for (let i = 1; i < list.length; i++) del.run(list[i].id); // лишние дубли host:port — удаляем
+      keepers.push({ id: keeper.id, nh, old: keeper.hash });
+    }
+    // проход 1: временные уникальные хэши (не 64-hex → не пересекутся с финальными sha256)
+    for (const k of keepers) {
+      if (k.old !== k.nh) setHash.run('tmp_' + k.id, k.id);
+    }
+    // проход 2: финальные канонические хэши (все различны — коллизий нет)
+    for (const k of keepers) {
+      if (k.old !== k.nh) setHash.run(k.nh, k.id);
+    }
+  });
+
+  try {
+    tx();
+    setSetting('configs_rehash_v2', '1');
+    console.log('[db] rehash-миграция configs → sha256(host:port) выполнена');
+  } catch (e) {
+    console.error('[db] rehash-миграция не удалась (оставляю старые хэши): ' + ((e && e.message) || e));
+  }
 }
 
 /* ───────────────────── users ───────────────────── */
@@ -362,12 +498,13 @@ function normalizeQtyLenient(input) {
  * «Продаваемый» сервер = active=1 AND alive=1, поэтому потолок покупки — число живых
  * (совпадает с count из regionsSummary, чтобы клиент не мог заказать больше, чем выдадим).
  */
-function availabilityMap() {
+function availabilityMap(listType) {
+  const lt = listType === 'white' ? 'white' : 'black';
   const map = new Map();
   const rows = stmt(
     `SELECT country_iso AS iso, COUNT(*) AS count FROM configs
-      WHERE active=1 AND alive=1 GROUP BY country_iso`
-  ).all();
+      WHERE active=1 AND alive=1 AND list_type=? GROUP BY country_iso`
+  ).all(lt);
   for (const r of rows) map.set(r.iso, Number(r.count) || 0);
   return map;
 }
@@ -509,24 +646,29 @@ function setExtra(n) {
 /* ───────────────────── configs ───────────────────── */
 
 /**
- * upsertConfigs(parsed) -> {added, revived, deactivated, total}
- * parsed = массив из util.parseSource().configs. Одна транзакция:
- * новые hash → insert(active=1); существующие → active=1, last_seen=now, uri/label обновить;
- * hash, которых нет в parsed → active=0. total = активных после.
+ * upsertConfigs(parsed, opts) -> {added, revived, deactivated, total}
+ * parsed = массив из util.parseSource().configs (или map.values() из util.mergeInto). Одна транзакция:
+ * новые hash → insert(active=1); существующие → active=1, last_seen=now, uri/label/list_type обновить;
+ * hash, которых нет в parsed → active=0 (реконсиляция). total = активных после.
+ *
+ * SPEC-SOURCES §4.2: list_type пишется из c.category ('white'|'black'); §3.5: логика не меняется.
+ * SPEC-SOURCES §7 риск#1: opts.reconcile=false ОТКЛЮЧАЕТ деактивацию отсутствующих — вызывать при
+ * частичном сбое источников, чтобы каталог не обнулялся (по умолчанию reconcile=true — как раньше).
  */
-function upsertConfigs(parsed) {
+function upsertConfigs(parsed, opts) {
   const list = Array.isArray(parsed) ? parsed : [];
+  const reconcile = !opts || opts.reconcile !== false;
   const res = { added: 0, revived: 0, deactivated: 0, total: 0 };
   const t = now();
 
   const getByHash = stmt('SELECT id, active FROM configs WHERE hash=?');
   const insert = stmt(
-    `INSERT INTO configs(hash, uri, host, port, flag, country_iso, country_name, city, label, active, first_seen, last_seen)
-     VALUES(@hash,@uri,@host,@port,@flag,@countryIso,@countryName,@city,@label,1,@t,@t)`
+    `INSERT INTO configs(hash, uri, host, port, flag, country_iso, country_name, city, label, list_type, active, first_seen, last_seen)
+     VALUES(@hash,@uri,@host,@port,@flag,@countryIso,@countryName,@city,@label,@listType,1,@t,@t)`
   );
   const update = stmt(
     `UPDATE configs SET uri=@uri, host=@host, port=@port, flag=@flag, country_iso=@countryIso,
-       country_name=@countryName, city=@city, label=@label, active=1, last_seen=@t
+       country_name=@countryName, city=@city, label=@label, list_type=@listType, active=1, last_seen=@t
      WHERE hash=@hash`
   );
   const selActiveHashes = stmt('SELECT hash FROM configs WHERE active=1');
@@ -548,6 +690,7 @@ function upsertConfigs(parsed) {
         countryName: c.countryName || '',
         city: c.city || '',
         label: c.label || '',
+        listType: c.category === 'white' ? 'white' : 'black',
         t,
       };
       const row = getByHash.get(c.hash);
@@ -559,10 +702,12 @@ function upsertConfigs(parsed) {
         update.run(params);
       }
     }
-    for (const r of selActiveHashes.all()) {
-      if (!seen.has(r.hash)) {
-        deactivate.run(r.hash);
-        res.deactivated++;
+    if (reconcile) {
+      for (const r of selActiveHashes.all()) {
+        if (!seen.has(r.hash)) {
+          deactivate.run(r.hash);
+          res.deactivated++;
+        }
       }
     }
     res.total = countActive.get().c;
@@ -621,14 +766,15 @@ function regionPopularity() {
  * сводка активных регионов (SPEC-QTY §3): [{iso,name,nameRu,flag,count,popularity}],
  * порядок — по nameRu (канон SPEC §3; сортировки витрины делают бот/mini app поверх).
  */
-function regionsSummary() {
+function regionsSummary(listType) {
+  const lt = listType === 'white' ? 'white' : 'black';
   const pop = regionPopularity();
   // SPEC-QUALITY §3: регион считаем по живым серверам (active=1 AND alive=1);
-  // регион с 0 живых не показывается и не продаётся.
+  // регион с 0 живых не показывается и не продаётся. SPEC-SOURCES §4.3: с учётом list_type.
   const rows = stmt(
     `SELECT country_iso AS iso, MAX(country_name) AS name, MAX(flag) AS flag, COUNT(*) AS count
-     FROM configs WHERE active=1 AND alive=1 GROUP BY country_iso`
-  ).all();
+     FROM configs WHERE active=1 AND alive=1 AND list_type=? GROUP BY country_iso`
+  ).all(lt);
   return rows
     .filter((r) => r.count > 0)
     .map((r) => ({
@@ -642,15 +788,16 @@ function regionsSummary() {
     .sort((a, b) => String(a.nameRu).localeCompare(String(b.nameRu), 'ru'));
 }
 
-/** живые конфиги указанных регионов (active=1 AND alive=1), сорт. country_name, city */
-function configsForRegions(isos) {
+/** живые конфиги указанных регионов (active=1 AND alive=1, list_type), сорт. country_name, city */
+function configsForRegions(isos, listType) {
+  const lt = listType === 'white' ? 'white' : 'black';
   const list = (Array.isArray(isos) ? isos : []).map((s) => String(s)).filter(Boolean);
   if (!list.length) return [];
   const ph = list.map(() => '?').join(',');
   return stmt(
-    `SELECT * FROM configs WHERE active=1 AND alive=1 AND country_iso IN (${ph})
+    `SELECT * FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso IN (${ph})
       ORDER BY country_name, city`
-  ).all(...list);
+  ).all(lt, ...list);
 }
 
 /**
@@ -685,26 +832,27 @@ function fallbackForRegions(isos) {
  * серверы региона оживут (клиент перечитает подписку).
  * qtyMap = {iso:count} | Map | массив ISO (count=1). Мягкая нормализация (не бросает).
  */
-function configsForRegionsQty(qtyMap) {
+function configsForRegionsQty(qtyMap, listType) {
+  const lt = listType === 'white' ? 'white' : 'black';
   const map = normalizeQtyLenient(qtyMap);
   const out = [];
   const selAlive = stmt(
-    `SELECT * FROM configs WHERE active=1 AND alive=1 AND country_iso=?
+    `SELECT * FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso=?
       ORDER BY last_seen DESC, hash ASC`
   );
   const selFallback = stmt(
-    `SELECT * FROM configs WHERE active=0 AND country_iso=?
+    `SELECT * FROM configs WHERE active=0 AND list_type=? AND country_iso=?
       ORDER BY last_seen DESC, hash ASC LIMIT 1`
   );
   for (const [iso, count] of map) {
     if (count < 1) continue;
-    const alive = selAlive.all(iso);
+    const alive = selAlive.all(lt, iso);
     if (alive.length > 0) {
       const take = Math.min(count, alive.length); // ровно min(qty, aliveCount)
       for (let i = 0; i < take; i++) out.push(alive[i]);
     } else {
       // край: живых в регионе нет — 1 самый свежий неактивный (deep-fallback, как раньше)
-      const fb = selFallback.get(iso);
+      const fb = selFallback.get(lt, iso);
       if (fb) out.push(fb);
     }
   }
@@ -716,7 +864,8 @@ function configsForRegionsQty(qtyMap) {
  * Живой = active=1 AND alive=1. Для показа «сейчас в ключе N доступных серверов» в выдаче
  * бота, /api/key и /api/me. Регионы без живых в Map отсутствуют (считать как 0).
  */
-function aliveCountForRegions(isos) {
+function aliveCountForRegions(isos, listType) {
+  const lt = listType === 'white' ? 'white' : 'black';
   const list = (Array.isArray(isos) ? isos : [])
     .map((s) => String(s == null ? '' : s).trim().toUpperCase())
     .filter((s) => /^[A-Z]{2}$/.test(s));
@@ -726,8 +875,8 @@ function aliveCountForRegions(isos) {
   const ph = uniq.map(() => '?').join(',');
   const rows = stmt(
     `SELECT country_iso AS iso, COUNT(*) AS count FROM configs
-      WHERE active=1 AND alive=1 AND country_iso IN (${ph}) GROUP BY country_iso`
-  ).all(...uniq);
+      WHERE active=1 AND alive=1 AND list_type=? AND country_iso IN (${ph}) GROUP BY country_iso`
+  ).all(lt, ...uniq);
   for (const r of rows) map.set(r.iso, Number(r.count) || 0);
   return map;
 }
@@ -746,15 +895,22 @@ function isBlacklistedHost(host) {
 }
 
 /**
- * hostsToCheck() -> [{host, port}] — уникальные пары среди active=1 конфигов, исключая
+ * hostsToCheck(limit) -> [{host, port}] — уникальные пары среди active=1 конфигов, исключая
  * заблэклисченные хосты и пустые host/port (для TCP-проверки живости, SPEC-QUALITY §4).
  * alive НЕ фильтруем: ранее «мёртвый» (недоступный) хост надо перепроверить — он мог ожить.
+ *
+ * SPEC-SOURCES §5.2: РОТАЦИЯ — самые давно проверенные первыми (ORDER BY alive_checked_at ASC,
+ * NULLS FIRST: никогда не проверенные — в приоритете). limit>0 ограничивает батч; limit пуст/0 →
+ * все (обратная совместимость: hostsToCheck() без аргумента возвращает всё, как раньше).
  */
-function hostsToCheck() {
-  const rows = stmt(
-    `SELECT DISTINCT host, port FROM configs
-      WHERE active=1 AND host IS NOT NULL AND host<>'' AND port>0`
-  ).all();
+function hostsToCheck(limit) {
+  let lim = Math.floor(Number(limit));
+  if (!Number.isFinite(lim) || lim <= 0) lim = 0;
+  const base =
+    `SELECT host, port, MIN(alive_checked_at) AS ck FROM configs
+      WHERE active=1 AND host IS NOT NULL AND host<>'' AND port>0
+      GROUP BY host, port ORDER BY (ck IS NULL) DESC, ck ASC`;
+  const rows = lim > 0 ? stmt(base + ' LIMIT ?').all(lim) : stmt(base).all();
   const out = [];
   for (const r of rows) {
     if (isBlacklistedHost(r.host)) continue;
@@ -763,14 +919,64 @@ function hostsToCheck() {
   return out;
 }
 
-/** Проставить alive всем конфигам с данным host:port. Возвращает число затронутых строк. */
+/**
+ * Проставить alive всем конфигам с данным host:port + отметить время проверки (alive_checked_at)
+ * для ротации (SPEC-SOURCES §5.2). Возвращает число затронутых строк.
+ */
 function setAliveByHostPort(host, port, alive) {
   const a = alive ? 1 : 0;
-  const info = stmt('UPDATE configs SET alive=? WHERE host=? AND port=?').run(
+  const info = stmt('UPDATE configs SET alive=?, alive_checked_at=? WHERE host=? AND port=?').run(
     a,
+    now(),
     String(host == null ? '' : host),
     Number(port) || 0
   );
+  return info.changes;
+}
+
+/**
+ * hostsForGeo(limit) -> [host,...] — уникальные хосты active=1 конфигов, у которых страна ещё XX
+ * и гео не пробовали (geo_checked_at IS NULL) (SPEC-SOURCES §6.2). Батч limit (дефолт 2000).
+ */
+function hostsForGeo(limit) {
+  let lim = Math.floor(Number(limit));
+  if (!Number.isFinite(lim) || lim <= 0) lim = 2000;
+  const rows = stmt(
+    `SELECT DISTINCT host FROM configs
+      WHERE active=1 AND host IS NOT NULL AND host<>''
+        AND (country_iso IS NULL OR country_iso='' OR country_iso='XX')
+        AND geo_checked_at IS NULL
+      LIMIT ?`
+  ).all(lim);
+  return rows.map((r) => String(r.host));
+}
+
+/**
+ * setGeo(host, iso) (SPEC-SOURCES §6.2) — гео-обогащение по IP заполняет страну ТОЛЬКО у XX-строк
+ * данного хоста (валидный флаг/имя из фрагмента не трогаем — уважаем явную метку). Флаг ставим,
+ * если пуст. В любом случае отмечаем geo_checked_at=now (чтобы не резолвить один хост повторно,
+ * даже если lookup ничего не дал). iso пустой/XX → только отметка времени. Возвращает число строк.
+ */
+function setGeo(host, iso) {
+  const h = String(host == null ? '' : host);
+  if (!h) return 0;
+  const code = String(iso == null ? '' : iso).trim().toUpperCase();
+  const t = now();
+  if (/^[A-Z]{2}$/.test(code) && code !== 'XX') {
+    const flag = util.isoToFlag(code) || '';
+    const info = stmt(
+      `UPDATE configs SET country_iso=?,
+         flag=CASE WHEN flag IS NULL OR flag='' THEN ? ELSE flag END,
+         geo_checked_at=?
+       WHERE host=? AND (country_iso IS NULL OR country_iso='' OR country_iso='XX')`
+    ).run(code, flag, t, h);
+    return info.changes;
+  }
+  // lookup не дал страны — просто отметим, что пробовали (не долбим DNS повторно)
+  const info = stmt(
+    `UPDATE configs SET geo_checked_at=?
+      WHERE host=? AND (country_iso IS NULL OR country_iso='' OR country_iso='XX')`
+  ).run(t, h);
   return info.changes;
 }
 
@@ -813,6 +1019,8 @@ function aliveStats() {
  * freeApplied (int, default 0) → orders.free_applied; bonusApplied (int, default 0, SPEC-REFERRAL §3)
  * → orders.bonus_applied; chargeId (напр. 'FREE') → orders.charge_id.
  * qty ({iso:count} | Map | JSON-строка) → orders.qty (JSON); отсутствует → NULL (SPEC-QTY §3).
+ * listType ('black'|'white', SPEC-SOURCES §4.4) → orders.list_type; дефолт 'black' (совместимость):
+ * buildSub собирает подписку из этого пула.
  */
 function createOrder(opts) {
   const o = opts || {};
@@ -825,6 +1033,7 @@ function createOrder(opts) {
   const freeApplied = Math.max(0, Math.floor(Number(o.freeApplied) || 0));
   const bonusApplied = Math.max(0, Math.floor(Number(o.bonusApplied) || 0));
   const chargeId = o.chargeId == null ? null : String(o.chargeId);
+  const listType = o.listType === 'white' ? 'white' : 'black';
 
   // qty: {iso:count} → JSON; Map → объект → JSON; строка — как есть; пусто → NULL.
   let qtyJson = null;
@@ -839,8 +1048,8 @@ function createOrder(opts) {
   }
 
   const info = stmt(
-    `INSERT INTO orders(user_id, regions, stars, status, token, charge_id, created_at, paid_at, expires_at, free_applied, qty, bonus_applied)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO orders(user_id, regions, stars, status, token, charge_id, created_at, paid_at, expires_at, free_applied, qty, bonus_applied, list_type)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     Number(o.userId) || 0,
     regionsJson,
@@ -853,7 +1062,8 @@ function createOrder(opts) {
     paidNow ? t + days * 86400 : null,
     freeApplied,
     qtyJson,
-    bonusApplied
+    bonusApplied,
+    listType
   );
   return { id: Number(info.lastInsertRowid), token };
 }
@@ -1092,7 +1302,10 @@ module.exports = {
   fallbackForRegions,
   configsForRegionsQty,
   aliveCountForRegions,
+  availabilityMap,
   hostsToCheck,
+  hostsForGeo,
+  setGeo,
   setAliveByHostPort,
   setAliveByHostPattern,
   aliveStats,

@@ -267,9 +267,128 @@ function genToken() {
   return crypto.randomBytes(16).toString('base64url');
 }
 
-/** sha256 hex от строки uri */
+/** sha256 hex от произвольной строки (uri или канонического ключа) */
 function hashUri(uri) {
   return crypto.createHash('sha256').update(String(uri), 'utf8').digest('hex');
+}
+
+/* ───────── дедуп по каноническому ключу сервера (SPEC-SOURCES §3) ───────── */
+
+/**
+ * canonicalKey(host, port, uuid, includeUuid) — единица «сервер» для кросс-источниковой
+ * дедупликации (SPEC-SOURCES §3.1). Дефолт: lower(host):port. При includeUuid — добавляем
+ * :lower(uuid) (строже: мультитенант за одним host:port). host уже без IPv6-скобок.
+ */
+function canonicalKey(host, port, uuid, includeUuid) {
+  const h = String(host == null ? '' : host).trim().toLowerCase();
+  const p = Number(port) || 0;
+  let key = h + ':' + p;
+  if (includeUuid) {
+    const u = String(uuid == null ? '' : uuid).trim().toLowerCase();
+    if (u) key += ':' + u;
+  }
+  return key;
+}
+
+/**
+ * configHash(uri, includeUuid) — репозиторий ключа = configs.hash (SPEC-SOURCES §3.2):
+ * sha256(canonicalKey), НЕ sha256(uri). Стабилен между рефрешами при неизменном host:port,
+ * поэтому upsertConfigs схлопывает один сервер из разных источников/рефрешей в одну строку и
+ * сохраняет alive/first_seen. Используется и парсером, и rehash-миграцией db (одинаковый ключ).
+ */
+function configHash(uri, includeUuid) {
+  const a = parseAuthority(uri);
+  return hashUri(canonicalKey(a.host, a.port, a.uuid, includeUuid));
+}
+
+/* ───────── нормализация тела источника (SPEC-SOURCES §2.2) ───────── */
+
+/** Регэксп схемы протокола в начале строки: 'vless://', 'trojan://', 'ss://', … */
+const SCHEME_RE = /^([a-z][a-z0-9+.-]*):\/\//i;
+
+/** Схема строки в lowercase ('vless') или '' если это не URI. */
+function schemeOf(line) {
+  const m = SCHEME_RE.exec(String(line == null ? '' : line));
+  return m ? m[1].toLowerCase() : '';
+}
+
+/** Разрешён ли протокол строки списком allow (дефолт ['vless']). */
+function isAllowedProtocol(line, allow) {
+  const s = schemeOf(line);
+  if (!s) return false;
+  const list = Array.isArray(allow) && allow.length ? allow : ['vless'];
+  return list.indexOf(s) !== -1;
+}
+
+/**
+ * maybeDecodeB64(text) — некоторые подписки приходят как единый base64-блок без '://'
+ * (SPEC-SOURCES §2.2). Если тело уже содержит '://' — возвращаем как есть (быстрый путь, важно
+ * для тяжёлого #2: не гоняем регэксп по 63 MB). Иначе пробуем base64-декод (std и url-safe);
+ * успех только если декодированное содержит '://'.
+ */
+function maybeDecodeB64(text) {
+  const t = String(text == null ? '' : text);
+  if (t.indexOf('://') !== -1) return t; // уже плоский список
+  const compact = t.replace(/\s+/g, '');
+  if (compact.length < 8 || !/^[A-Za-z0-9+/=_-]+$/.test(compact)) return t;
+  try {
+    const std = compact.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = Buffer.from(std, 'base64').toString('utf8');
+    if (decoded.indexOf('://') !== -1) return decoded;
+  } catch (e) {
+    // не base64 — вернём исходный текст
+  }
+  return t;
+}
+
+/**
+ * splitGluedLine(line) — некоторые источники клеят несколько vless:// в одну строку
+ * (SPEC-SOURCES §2.2). Вставляем перенос перед каждым НЕ-ведущим 'vless://' и разбиваем.
+ * Возвращает массив кусков (для одиночной строки — [line]). Экономно: вызывается только когда
+ * во входе реально ещё раз встречается 'vless://' (см. mergeInto), поэтому по 63 MB не гоняется.
+ */
+function splitGluedLine(line) {
+  const s = String(line == null ? '' : line);
+  const glued = s.replace(/([^\n])(vless:\/\/)/g, '$1\n$2');
+  return glued.indexOf('\n') !== -1 ? glued.split('\n') : [s];
+}
+
+/** Уровень security по uri: reality=3 > tls=2 > none/прочее=1 (для pickBest). */
+function securityRank(uri) {
+  const m = /[?&]security=([^&#\s]*)/i.exec(String(uri == null ? '' : uri));
+  const v = m ? m[1].toLowerCase() : '';
+  if (v === 'reality') return 3;
+  if (v === 'tls') return 2;
+  return 1;
+}
+
+/** Похоже ли userinfo на валидный UUID v4-подобный (8-4-4-4-12 hex). */
+function looksLikeUuid(s) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s == null ? '' : s).trim());
+}
+
+/**
+ * pickBest(a, b) — выбрать «лучшего» представителя при коллизии canonicalKey (SPEC-SOURCES §3.3).
+ * Приоритет (по убыванию): security reality>tls>none; распознанная страна (iso≠XX); валидный uuid;
+ * более короткий/чистый label. Возвращает один из объектов (при равенстве — a, «первого»).
+ * Категория (white>black) разрешается ОТДЕЛЬНО в mergeInto — здесь только представитель uri/меток.
+ */
+function scoreConfig(c) {
+  if (!c) return -1;
+  let score = 0;
+  score += (typeof c._sec === 'number' ? c._sec : securityRank(c.uri)) * 1000;
+  if (c.countryIso && c.countryIso !== 'XX') score += 300;
+  if (c._uuidValid || looksLikeUuid(c.uuid)) score += 100;
+  // короче label — чуть лучше (штраф за длину, слабый вес, не перебивает старшие критерии)
+  const len = c.label ? String(c.label).length : 0;
+  score += Math.max(0, 40 - Math.min(40, len));
+  return score;
+}
+
+function pickBest(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return scoreConfig(b) > scoreConfig(a) ? b : a;
 }
 
 /** HTML-эскейп для parse_mode:'HTML' */
@@ -314,23 +433,30 @@ function b64utf8(s) {
 
 /* ─────────────────────────── Парсер источника ─────────────────────────── */
 
-/** host:port из authority vless-URI (uuid@host:port; IPv6 в [скобках]) */
-function parseHostPort(uri) {
+/**
+ * parseAuthority(uri) -> {host, port, uuid} из authority любого `scheme://userinfo@host:port…`.
+ * uuid = userinfo (часть до последнего '@' в authority) — для строгого дедупа host:port:uuid.
+ * IPv6 в [скобках] учтён. Схема не важна (работает и для не-vless, но каталог оставляет vless).
+ */
+function parseAuthority(uri) {
   try {
-    const noScheme = String(uri).slice('vless://'.length);
+    const str = String(uri == null ? '' : uri);
+    const schemeIdx = str.indexOf('://');
+    const noScheme = schemeIdx === -1 ? str : str.slice(schemeIdx + 3);
     let end = noScheme.length;
-    for (const ch of ['?', '#']) {
+    for (const ch of ['?', '#', '/']) {
       const i = noScheme.indexOf(ch);
       if (i !== -1 && i < end) end = i;
     }
     const authority = noScheme.slice(0, end);
     const at = authority.lastIndexOf('@');
+    const uuid = at === -1 ? '' : authority.slice(0, at);
     const hostport = at === -1 ? authority : authority.slice(at + 1);
     let host = '';
     let port = 0;
     if (hostport.startsWith('[')) {
       const close = hostport.indexOf(']');
-      if (close === -1) return { host: hostport, port: 0 };
+      if (close === -1) return { host: hostport, port: 0, uuid };
       host = hostport.slice(1, close);
       const rest = hostport.slice(close + 1);
       if (rest.startsWith(':')) port = parseInt(rest.slice(1), 10) || 0;
@@ -343,16 +469,22 @@ function parseHostPort(uri) {
         port = parseInt(hostport.slice(colon + 1), 10) || 0;
       }
     }
-    return { host, port };
+    return { host, port, uuid };
   } catch (e) {
-    return { host: '', port: 0 };
+    return { host: '', port: 0, uuid: '' };
   }
 }
 
-/** одна строка vless:// -> объект конфига (или null, если совсем мусор) */
-function parseVlessLine(uri) {
+/**
+ * одна строка vless:// -> объект конфига (или null, если совсем мусор).
+ * opts = {category:'black'|'white', includeUuid:bool} — влияет на hash (canonicalKey) и list_type.
+ * hash = sha256(canonicalKey) (SPEC-SOURCES §3.2). На объект кладём служебные _sec/_uuidValid/uuid
+ * (для pickBest) и category (для list_type) — upsertConfigs берёт только известные поля.
+ */
+function parseVlessLine(uri, opts) {
   try {
-    const { host, port } = parseHostPort(uri);
+    const o = opts || {};
+    const { host, port, uuid } = parseAuthority(uri);
 
     // фрагмент после # -> человекочитаемый лейбл
     const hashIdx = uri.indexOf('#');
@@ -428,12 +560,16 @@ function parseVlessLine(uri) {
       uri,
       host,
       port,
+      uuid,
       flag,
       countryIso,
       countryName,
       city,
       label,
-      hash: hashUri(uri),
+      category: o.category === 'white' ? 'white' : 'black',
+      _sec: securityRank(uri),
+      _uuidValid: looksLikeUuid(uuid),
+      hash: configHash(uri, !!o.includeUuid),
     };
   } catch (e) {
     return null;
@@ -441,21 +577,48 @@ function parseVlessLine(uri) {
 }
 
 /**
- * parseSource(text) -> { meta:{title,count,dateLine}, configs:[{uri,host,port,flag,countryIso,countryName,city,label,hash}] }
- * Дубликаты uri (одинаковый hash) схлопываются — остаётся первый.
+ * parseSource(text, opts) -> { meta:{title,count,dateLine,dropped}, configs:[{…,hash,category}] }
+ * opts = {category:'black'|'white', includeUuid:bool, allow:[protocols]} (все необязательны;
+ * дефолты — black / host:port / ['vless'] — полная обратная совместимость parseSource(text)).
+ *
+ * Изменения SPEC-SOURCES §2/§3: base64-подписка декодируется (maybeDecodeB64); склеенные строки
+ * (несколько vless:// в одной) разбиваются; не-vless (по allow) отбрасываются (meta.dropped);
+ * дедуп по НОВОМУ hash = sha256(canonicalKey=host:port) — внутрифайловые host:port-дубли
+ * схлопываются автоматически, остаётся ПЕРВЫЙ (для одиночного источника этого достаточно;
+ * кросс-источниковый выбор лучшего — в mergeInto/pickBest).
  */
-function parseSource(text) {
-  const lines = String(text == null ? '' : text).split(/\r?\n/);
-  const meta = { title: '', count: 0, dateLine: '' };
+function parseSource(text, opts) {
+  const o = opts || {};
+  const category = o.category === 'white' ? 'white' : 'black';
+  const includeUuid = !!o.includeUuid;
+  const allow = Array.isArray(o.allow) && o.allow.length ? o.allow : ['vless'];
+
+  const body = maybeDecodeB64(text);
+  const lines = String(body == null ? '' : body).split(/\r?\n/);
+  const meta = { title: '', count: 0, dateLine: '', dropped: 0 };
   const configs = [];
   const seen = new Set();
   let firstHeader = '';
+
+  const handle = (part0) => {
+    const part = String(part0 == null ? '' : part0).trim();
+    if (!part) return;
+    if (!isAllowedProtocol(part, allow)) {
+      if (schemeOf(part)) meta.dropped++; // не-vless URI — сознательно отбрасываем
+      return;
+    }
+    const parsed = parseVlessLine(part, { category, includeUuid });
+    if (!parsed || !parsed.hash) return;
+    if (seen.has(parsed.hash)) return; // host:port-дубль внутри файла
+    seen.add(parsed.hash);
+    configs.push(parsed);
+  };
 
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
 
-    if (!line.startsWith('vless://')) {
+    if (!schemeOf(line)) {
       // строки шапки вида "# profile-title: ...", "# Date/Time: ...", "# Количество: 150"
       const hm = line.match(/^#\s*(.+)$/);
       if (hm) {
@@ -469,11 +632,12 @@ function parseSource(text) {
       continue;
     }
 
-    const parsed = parseVlessLine(line);
-    if (!parsed || !parsed.hash) continue;
-    if (seen.has(parsed.hash)) continue;
-    seen.add(parsed.hash);
-    configs.push(parsed);
+    // строка-URI: может быть склеенной (несколько vless:// подряд) — тогда разбиваем
+    if (line.indexOf('vless://', 1) !== -1) {
+      for (const p of splitGluedLine(line)) handle(p);
+    } else {
+      handle(line);
+    }
   }
 
   if (!meta.title && firstHeader) meta.title = firstHeader;
@@ -481,8 +645,62 @@ function parseSource(text) {
   return { meta, configs };
 }
 
+/**
+ * mergeInto(map, text, opts) — стриминговый merge-редьюс источника в общий Map<hash, bestConfig>
+ * (SPEC-SOURCES §2.6). Пик памяти = число уникальных host:port, а не сумма всех строк — критично
+ * для тяжёлого #2. Дедуп по hash=sha256(canonicalKey); при коллизии — pickBest (лучший uri/метки),
+ * а категория white побеждает black (§4.2: whitelist — положительное свойство, не теряем).
+ * opts = {category, includeUuid, allow}. Возвращает {added, merged, dropped}.
+ */
+function mergeInto(map, text, opts) {
+  const o = opts || {};
+  const category = o.category === 'white' ? 'white' : 'black';
+  const includeUuid = !!o.includeUuid;
+  const allow = Array.isArray(o.allow) && o.allow.length ? o.allow : ['vless'];
+  const stats = { added: 0, merged: 0, dropped: 0 };
+
+  let body = maybeDecodeB64(text);
+  const lines = String(body == null ? '' : body).split(/\r?\n/);
+  body = null; // отпускаем крупную строку до цикла (память тяжёлого #2)
+
+  const handle = (part0) => {
+    const part = String(part0 == null ? '' : part0).trim();
+    if (!part) return;
+    const scheme = schemeOf(part);
+    if (!scheme) return; // шапка/комментарий/мусор
+    if (allow.indexOf(scheme) === -1) {
+      stats.dropped++;
+      return;
+    }
+    const cfg = parseVlessLine(part, { category, includeUuid });
+    if (!cfg || !cfg.hash) return;
+    const prev = map.get(cfg.hash);
+    if (!prev) {
+      map.set(cfg.hash, cfg);
+      stats.added++;
+    } else {
+      const best = pickBest(prev, cfg);
+      if (prev.category === 'white' || cfg.category === 'white') best.category = 'white';
+      map.set(cfg.hash, best);
+      stats.merged++;
+    }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.indexOf('vless://', 1) !== -1) {
+      for (const p of splitGluedLine(line)) handle(p);
+    } else {
+      handle(line);
+    }
+  }
+  return stats;
+}
+
 module.exports = {
   parseSource,
+  mergeInto,
   flagToIso,
   isoToFlag,
   COUNTRY_RU,
@@ -490,6 +708,17 @@ module.exports = {
   nameRuOf,
   genToken,
   hashUri,
+  // SPEC-SOURCES §3: канонический ключ и его хэш (использует db.rehash-миграция и парсер)
+  canonicalKey,
+  configHash,
+  parseAuthority,
+  // SPEC-SOURCES §2: нормализация тела источника
+  maybeDecodeB64,
+  splitGluedLine,
+  schemeOf,
+  isAllowedProtocol,
+  // SPEC-SOURCES §3.3: выбор лучшего представителя при коллизии canonicalKey
+  pickBest,
   esc,
   fmtDate,
   fmtDateTime,

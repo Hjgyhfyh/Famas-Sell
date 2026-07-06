@@ -62,6 +62,53 @@ const DEFAULT_BROWSER_UA_BLOCK = [
   'python-requests', 'postmanruntime', 'go-http-client',
 ];
 
+// SPEC-SOURCES §2.1: какие протоколы продаём/парсим. По умолчанию только vless (≈96% каталога);
+// не-vless (trojan/ss/vmess/hysteria2/…) сознательно отбрасываются на парсинге. env-переопределяемый.
+const DEFAULT_ALLOWED_PROTOCOLS = ['vless'];
+
+/**
+ * SPEC-SOURCES §1.2: реестр источников каталога. Приоритет:
+ *   1) env SOURCES_JSON (валидный JSON-массив) — оверрайд без правки кода;
+ *   2) committed-реестр src/sources.js.
+ * Если результат пуст → единственный fallback от SOURCE_URL (обратная совместимость): каталог
+ * из одного чёрного vless-источника. Тянуть реестр require должно быть безопасно (sources.js —
+ * чистый модуль-данные без require). Любая ошибка разбора → тихий фолбэк на sources.js.
+ */
+function loadSources(sourceUrl) {
+  let list = null;
+  const raw = envStr('SOURCES_JSON', '');
+  if (raw) {
+    try {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) list = arr;
+    } catch (e) {
+      list = null; // битый JSON — падаем на committed-реестр
+    }
+  }
+  if (!Array.isArray(list)) {
+    try {
+      list = require('./sources');
+    } catch (e) {
+      list = null;
+    }
+  }
+  if (!Array.isArray(list) || list.length === 0) {
+    // обратная совместимость: пустой реестр → один чёрный источник от SOURCE_URL
+    return [{ id: 'source_url', url: sourceUrl, category: 'black', type: 'vless', enabled: true, heavy: false }];
+  }
+  // нормализация полей каждого источника (мягко, без выбрасывания)
+  return list
+    .filter((s) => s && typeof s === 'object' && s.url)
+    .map((s, i) => ({
+      id: s.id != null ? String(s.id) : 'src_' + i,
+      url: String(s.url),
+      category: s.category === 'white' ? 'white' : 'black',
+      type: s.type ? String(s.type) : 'mixed',
+      enabled: s.enabled === undefined ? true : !!s.enabled,
+      heavy: !!s.heavy,
+    }));
+}
+
 const config = {
   BOT_TOKEN: envStr('BOT_TOKEN', ''),
   ADMIN_IDS: envStr('ADMIN_IDS', '927937870')
@@ -102,8 +149,37 @@ const config = {
   HEALTHCHECK_ENABLED: envBool('HEALTHCHECK_ENABLED', 1),
   // Таймаут одного TCP-подключения при проверке, мс.
   HEALTHCHECK_TIMEOUT_MS: envNum('HEALTHCHECK_TIMEOUT_MS', 4000),
-  // Сколько хостов проверять одновременно (размер пула).
-  HEALTHCHECK_CONCURRENCY: envNum('HEALTHCHECK_CONCURRENCY', 24),
+  // Сколько хостов проверять одновременно (размер пула). SPEC-SOURCES §5.3: при масштабе ~56k
+  // хостов поднято до 256 (Node тянет; на VDS следить за лимитом FD/эфемерных портов). На малом
+  // одиночном источнике (MULTI_SOURCE=0, ~500 хостов) это лишь ускоряет свип — поведение то же.
+  HEALTHCHECK_CONCURRENCY: envNum('HEALTHCHECK_CONCURRENCY', 256),
+  // SPEC-SOURCES §5.2: размер батча ротационного healthcheck. Проверяем не всё каждый цикл, а
+  // самые давно проверенные (ORDER BY alive_checked_at ASC NULLS FIRST) порциями по BATCH; полный
+  // свип набирается за несколько циклов. На одиночном источнике (<BATCH хостов) берётся всё разом.
+  HEALTHCHECK_BATCH: envNum('HEALTHCHECK_BATCH', 8000),
+
+  // ── SPEC-SOURCES: мультиисточник, дедуп, гео, белые списки (всё под флагами) ──
+  // Разрешённые протоколы каталога (парсим/продаём). Дефолт только vless (SPEC-SOURCES §2.1).
+  ALLOWED_PROTOCOLS: envList('ALLOWED_PROTOCOLS', DEFAULT_ALLOWED_PROTOCOLS),
+  // MULTI_SOURCE=0 (дефолт) → работаем ровно как раньше от одного SOURCE_URL (обратная
+  // совместимость прод). =1 → тянем реестр SOURCES пулом с дедупом/гео/белыми списками.
+  MULTI_SOURCE: envBool('MULTI_SOURCE', 0),
+  // Реестр источников (SPEC-SOURCES §1.2). Заполняется из SOURCES_JSON или src/sources.js;
+  // пуст → один fallback от SOURCE_URL. Используется только при MULTI_SOURCE=1.
+  SOURCES: loadSources(envStr(
+    'SOURCE_URL',
+    'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS_mobile.txt'
+  )),
+  // Гео-обогащение по IP (dns.resolve→geoip.lookup) заполняет country_iso только у XX-конфигов
+  // (SPEC-SOURCES §6). Дефолт 0. Если geoip-lite не грузится — флаг игнорируется (фолбэк на флаги).
+  GEO_ENABLED: envBool('GEO_ENABLED', 0),
+  // Сколько XX-хостов гео-обогащать за один пасс (батч), и размер пула DNS-резолва.
+  GEO_BATCH: envNum('GEO_BATCH', 2000),
+  GEO_CONCURRENCY: envNum('GEO_CONCURRENCY', 32),
+  // Категория «белые списки» (SPEC-SOURCES §4) — бэкенд-флаг (UI-вкладку добавим позже). Дефолт 0.
+  WHITELIST_ENABLED: envBool('WHITELIST_ENABLED', 0),
+  // Строже дедуп: ключ host:port:uuid вместо host:port (SPEC-SOURCES §3.1). Дефолт 0 (host:port).
+  DEDUP_INCLUDE_UUID: envBool('DEDUP_INCLUDE_UUID', 0),
 
   // ── SPEC-HARDEN ч.1: стабильность выданного ключа ──
   // ОТДЕЛЬНЫЙ таймер healthcheck (помимо refresh источника): мёртвый сервер выпадает из
