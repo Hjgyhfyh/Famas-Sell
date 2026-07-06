@@ -51,7 +51,8 @@
         <span class="dot" id="trustDot" aria-hidden="true"></span><span id="trustText">загрузка…</span>
       </div>
       <div class="facts gl">
-        <div class="frow mono"><span class="fk">ЦЕНА ЗА РЕГИОН</span><span class="lead"></span><span class="fv" id="factPrice">—</span></div>
+        <div class="frow mono"><span class="fk">ПЕРВЫЙ СЕРВЕР СТРАНЫ</span><span class="lead"></span><span class="fv" id="factPrice">—</span></div>
+        <div class="frow mono"><span class="fk">ДОП. СЕРВЕР СТРАНЫ</span><span class="lead"></span><span class="fv" id="factExtra">—</span></div>
         <div class="frow mono"><span class="fk">СРОК КЛЮЧА</span><span class="lead"></span><span class="fv" id="factDays">—</span></div>
         <div class="frow mono"><span class="fk">ВЫДАЧА</span><span class="lead"></span><span class="fv">МГНОВЕННО</span></div>
       </div>
@@ -69,6 +70,13 @@
 
     <div class="search" id="searchWrap" hidden>
       <input type="search" id="searchInput" class="mono" placeholder="поиск региона…" autocomplete="off" spellcheck="false" aria-label="Поиск региона" enterkeyhint="search">
+    </div>
+
+    <!-- SPEC-QTY: сортировка витрины (дефолт «Популярные», выбор хранится в localStorage famas_sort) -->
+    <div class="sortrow" id="sortRow" role="radiogroup" aria-label="Сортировка регионов">
+      <button type="button" class="sortchip mono active" role="radio" aria-checked="true" data-sort="pop">🔥 Популярные</button>
+      <button type="button" class="sortchip mono" role="radio" aria-checked="false" data-sort="az">А-Я</button>
+      <button type="button" class="sortchip mono" role="radio" aria-checked="false" data-sort="count">Серверов ↓</button>
     </div>
 
     <div class="grid" id="regionGrid" role="group" aria-label="Выбор регионов"></div>
@@ -107,10 +115,10 @@
         </button>
         <div class="acc-panel">
           <div class="acc-body">
-            <div class="hs"><b class="mono">01</b><span>Отметь нужные регионы во вкладке «МАГАЗИН» — можно сразу несколько.</span></div>
+            <div class="hs"><b class="mono">01</b><span>Отметь нужные страны во вкладке «МАГАЗИН» — можно сразу несколько; кнопками − и ＋ выбери число серверов в каждой.</span></div>
             <div class="hs"><b class="mono">02</b><span>Нажми «ОПЛАТИТЬ» и подтверди счёт звёздами Telegram.</span></div>
             <div class="hs"><b class="mono">03</b><span>Ключ мгновенно придёт в чат с ботом и появится во вкладке «МОИ КЛЮЧИ».</span></div>
-            <p class="fine mono tiny">цена: <span id="helpPrice">20</span> зв. за регион · срок: <span id="helpDays">30</span> дн. · одна ссылка на все регионы</p>
+            <p class="fine mono tiny">первый сервер страны: <span id="helpPrice">20</span> зв. · каждый доп.: +<span id="helpExtra">10</span> зв. · срок: <span id="helpDays">30</span> дн. · одна ссылка на всё</p>
           </div>
         </div>
       </div>
@@ -150,6 +158,8 @@
           <div class="acc-body">
             <p class="q">— Ссылка одна на все регионы?</p>
             <p class="a">Да. Внутри подписки — серверы всех купленных стран, переключайся прямо в приложении.</p>
+            <p class="q">— Зачем несколько серверов одной страны?</p>
+            <p class="a">Запасные адреса и разные точки внутри страны. Первый сервер — по базовой цене, каждый следующий той же страны — дешевле; актуальные цены — в шапке магазина.</p>
             <p class="q">— Серверы меняются?</p>
             <p class="a">Подписка живая: список конфигов обновляется сам, ссылка остаётся прежней.</p>
             <p class="q">— Сколько действует ключ?</p>
@@ -175,8 +185,8 @@
 <div class="paybar gl" id="paybar">
   <div class="bar-in">
     <div class="pinfo">
-      <div class="pi-top mono tiny" id="payLine">ВЫБРАНО 0 · ИТОГО 0×20 ⭐</div>
-      <div class="pi-sum mono" id="paySum">0 ⭐</div>
+      <div class="pi-top mono tiny" id="payLine">СТРАН: 0 · СЕРВЕРОВ: 0</div>
+      <div class="pi-sum mono"><span class="pi-lbl">ИТОГО:</span> <b id="paySum">0 ⭐</b></div>
     </div>
     <button type="button" class="paybtn" id="payBtn" disabled>
       <span class="pb-label">ОПЛАТИТЬ ⭐</span>
@@ -234,7 +244,11 @@
   <div class="region on prev gl" id="prevCard" aria-hidden="true">
     <span class="flagchip"><img src="/famas/flags/de.svg" alt="" width="34" height="26" draggable="false" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><i class="flag-fb" hidden>🇩🇪</i></span>
     <span class="r-name">Германия</span>
-    <span class="r-count mono">5 серв.</span>
+    <span class="r-count mono">5 серверов</span>
+    <span class="r-foot">
+      <span class="qty"><span class="qbtn">−</span><b class="q-val mono">2</b><span class="qbtn">＋</span></span>
+      <b class="r-price mono">30 ⭐</b>
+    </span>
     <span class="r-check"><svg viewBox="0 0 12 12"><path d="M2.5 6.5 5 9 9.5 3.5"></path></svg></span>
   </div>
 </div>

@@ -1,6 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════
    FAMAS STORE ⁂ — mini app · ванильный JS, без зависимостей
    API: /famas/api (§9 SPEC) · дизайн v2 «FAMAS ROUNDED» (SPEC-V2)
+   SPEC-QTY: количество серверов на регион + 3 сортировки витрины
    ═══════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
@@ -19,18 +20,21 @@
   var SUPPORT_URL = 'https://t.me/sigmatik323';
   var THEME_KEY = 'famas_theme';
   var GLASS_KEY = 'famas_glass';
+  var SORT_KEY = 'famas_sort';   // SPEC-QTY: выбранная сортировка витрины
   var THEME_BG = { bw: '#000000', dracula: '#191A21' };
 
   /* ── состояние ───────────────────────────────────────────────── */
   var S = {
     regions: [],
     regionsSig: '',     // подпись данных: тихий рефреш не трогает DOM без изменений
-    price: 20,
+    price: 20,          // base: 1-й сервер региона (из /api/regions, не хардкод)
+    extra: 10,          // SPEC-QTY: каждый доп. сервер того же региона (из /api/regions)
     subDays: 30,
     total: 0,
     updatedAt: 0,
-    sel: {},            // iso -> true
+    sel: {},            // iso -> qty (1..count региона)
     selCount: 0,
+    sort: 'pop',        // SPEC-QTY: 'pop' | 'az' | 'count' (localStorage famas_sort)
     query: '',
     staggered: false,   // stagger-анимация только при первом рендере
     orders: null,
@@ -68,6 +72,7 @@
   var elSwGlass = $('swGlass');
   var elSearchWrap = $('searchWrap');
   var elSearchInput = $('searchInput');
+  var elSortRow = $('sortRow');
   var elTabInd = $('tabInd');
 
   /* ── утилиты ─────────────────────────────────────────────────── */
@@ -400,14 +405,67 @@
     elGrid.innerHTML = h;
   }
 
+  /* SPEC-QTY: три клиентские сортировки витрины (данные — из /api/regions) */
+  function sortRegions(list) {
+    var arr = list.slice();
+    var byName = function (a, b) {
+      return String(a.nameRu || a.name || a.iso).localeCompare(String(b.nameRu || b.name || b.iso), 'ru');
+    };
+    if (S.sort === 'az') arr.sort(byName);
+    else if (S.sort === 'count') {
+      arr.sort(function (a, b) {
+        return (Number(b.count) || 0) - (Number(a.count) || 0) || byName(a, b);
+      });
+    } else { /* 'pop' — популярные: popularity desc, тай-брейк count desc */
+      arr.sort(function (a, b) {
+        return (Number(b.popularity) || 0) - (Number(a.popularity) || 0) ||
+               (Number(b.count) || 0) - (Number(a.count) || 0) ||
+               byName(a, b);
+      });
+    }
+    return arr;
+  }
+
   function visibleRegions() {
-    if (!S.query) return S.regions;
+    var list = sortRegions(S.regions);
+    if (!S.query) return list;
     var q = norm(S.query);
-    return S.regions.filter(function (r) {
+    return list.filter(function (r) {
       return norm(r.nameRu).indexOf(q) !== -1 ||
              norm(r.name).indexOf(q) !== -1 ||
              norm(r.iso).indexOf(q) !== -1;
     });
+  }
+
+  function regionByIso(iso) {
+    for (var i = 0; i < S.regions.length; i++) {
+      if (S.regions[i].iso === iso) return S.regions[i];
+    }
+    return null;
+  }
+
+  /* SPEC-QTY: низ карточки — цена-подсказка (не выбран) либо степпер + живая цена.
+     Цена региона: base + extra*(q-1); максимум q = count («＋» дизейблится). */
+  function footInner(r, qty) {
+    var count = Number(r.count) || 0;
+    if (qty > 0) {
+      return '<span class="qty" role="group" aria-label="Количество серверов">' +
+          '<button type="button" class="qbtn minus" data-q="-1" aria-label="Убрать сервер"' + (qty <= 1 ? ' disabled' : '') + '>−</button>' +
+          '<b class="q-val mono">' + qty + '</b>' +
+          '<button type="button" class="qbtn plus" data-q="1" aria-label="Добавить сервер"' + (qty >= count ? ' disabled' : '') + '>＋</button>' +
+        '</span>' +
+        '<b class="r-price mono">' + fmtNum(S.price + S.extra * (qty - 1)) + ' ⭐</b>';
+    }
+    return '<span class="r-hint mono">' + fmtNum(S.price) + ' ⭐</span>';
+  }
+
+  function cardInner(r, qty) {
+    var count = Number(r.count) || 0;
+    return flagChipHtml(r.iso, r.flag, false) +
+      '<span class="r-name">' + esc(r.nameRu || r.name || r.iso) + '</span>' +
+      '<span class="r-count mono">' + count + ' ' + plural(count, 'сервер', 'сервера', 'серверов') + '</span>' +
+      '<span class="r-foot">' + footInner(r, qty) + '</span>' +
+      '<span class="r-check"><svg viewBox="0 0 12 12"><path d="M2.5 6.5 5 9 9.5 3.5"></path></svg></span>';
   }
 
   function renderRegions() {
@@ -427,18 +485,91 @@
     var html = '';
     for (var i = 0; i < list.length; i++) {
       var r = list[i];
-      var on = !!S.sel[r.iso];
+      var q = S.sel[r.iso] || 0;
       var st = doStagger ? (' in" style="animation-delay:' + Math.min(i * 40, 640) + 'ms') : '';
+      /* карточка — div[role=button]: внутри живут кнопки степпера (кнопку в кнопку нельзя) */
       html +=
-        '<button type="button" class="region gl' + (on ? ' on' : '') + st + '" data-iso="' + esc(r.iso) + '" aria-pressed="' + (on ? 'true' : 'false') + '">' +
-          flagChipHtml(r.iso, r.flag, false) +
-          '<span class="r-name">' + esc(r.nameRu || r.name || r.iso) + '</span>' +
-          '<span class="r-count mono">' + (Number(r.count) || 0) + ' серв.</span>' +
-          '<span class="r-check"><svg viewBox="0 0 12 12"><path d="M2.5 6.5 5 9 9.5 3.5"></path></svg></span>' +
-        '</button>';
+        '<div class="region gl' + (q > 0 ? ' on' : '') + st + '" data-iso="' + esc(r.iso) + '" role="button" tabindex="0" aria-pressed="' + (q > 0 ? 'true' : 'false') + '">' +
+          cardInner(r, q) +
+        '</div>';
     }
     elGrid.innerHTML = html;
     if (doStagger) S.staggered = true;
+  }
+
+  /* ── SPEC-QTY: сортировка — чипы + плавная FLIP-перестановка ──── */
+  function syncSortChips() {
+    if (!elSortRow) return;
+    var btns = elSortRow.querySelectorAll('.sortchip');
+    for (var i = 0; i < btns.length; i++) {
+      var on = btns[i].getAttribute('data-sort') === S.sort;
+      btns[i].classList.toggle('active', on);
+      btns[i].setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+  }
+
+  function setSort(mode, animate) {
+    if (mode !== 'pop' && mode !== 'az' && mode !== 'count') mode = 'pop';
+    S.sort = mode;
+    try { localStorage.setItem(SORT_KEY, mode); } catch (e) { /* noop */ }
+    syncSortChips();
+    if (!S.regions.length) return; /* витрина ещё грузится — порядок применится при рендере */
+    if (animate) flipReorder(); else renderRegions();
+  }
+
+  /* FLIP: снять старые позиции → переставить существующие узлы (без пересборки,
+     флаги не мигают) → обратный transform → плавный уход в ноль */
+  var flipTimer = null;
+  function flipReorder() {
+    var cards = elGrid.querySelectorAll('.region[data-iso]');
+    if (!cards.length) { renderRegions(); return; }
+    /* прошлый прогон мог не доиграть: снять его таймер и классы,
+       иначе он снимет .flip посреди новой анимации и карточки прыгнут */
+    if (flipTimer) { clearTimeout(flipTimer); flipTimer = null; }
+    for (var c = 0; c < cards.length; c++) cards[c].classList.remove('flip');
+    var reduce = false;
+    try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { /* noop */ }
+    var byIso = {};
+    var first = {};
+    for (var i = 0; i < cards.length; i++) {
+      var iso = cards[i].getAttribute('data-iso');
+      byIso[iso] = cards[i];
+      if (!reduce) first[iso] = cards[i].getBoundingClientRect();
+    }
+    var list = visibleRegions();
+    var frag = document.createDocumentFragment();
+    for (var j = 0; j < list.length; j++) {
+      if (byIso[list[j].iso]) frag.appendChild(byIso[list[j].iso]);
+    }
+    elGrid.appendChild(frag);
+    if (reduce) return;
+    var anim = [];
+    for (var k = 0; k < list.length; k++) {
+      var el = byIso[list[k].iso];
+      var f = first[list[k].iso];
+      if (!el || !f) continue;
+      var last = el.getBoundingClientRect();
+      var dx = f.left - last.left;
+      var dy = f.top - last.top;
+      if (Math.abs(dx) < .5 && Math.abs(dy) < .5) continue;
+      el.classList.remove('flip');
+      el.style.transition = 'none';
+      el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+      anim.push(el);
+    }
+    if (!anim.length) return;
+    void elGrid.offsetWidth; /* зафиксировать стартовые transform до анимации */
+    requestAnimationFrame(function () {
+      for (var m = 0; m < anim.length; m++) {
+        anim[m].classList.add('flip');
+        anim[m].style.transition = '';
+        anim[m].style.transform = '';
+      }
+      flipTimer = setTimeout(function () {
+        flipTimer = null;
+        for (var m2 = 0; m2 < anim.length; m2++) anim[m2].classList.remove('flip');
+      }, 480);
+    });
   }
 
   /* silent=true — тихий рефреш: без скелетонов, без плашек, DOM трогаем
@@ -454,21 +585,30 @@
         if (!d.ok) throw new Error('bad payload');
         S.regions = d.regions || [];
         S.price = Number(d.price) || S.price;
+        /* SPEC-QTY: цена доп. сервера из API (extra=0 — легальное значение) */
+        S.extra = (d.extra === undefined || d.extra === null) ? S.extra : (Number(d.extra) || 0);
         S.subDays = Number(d.subDays) || S.subDays;
         S.total = Number(d.total) || 0;
         S.updatedAt = d.updatedAt || 0;
-        var sig = JSON.stringify(S.regions);
+        /* в подписи и цены: их смена тоже требует перерисовки карточек */
+        var sig = JSON.stringify([S.regions, S.price, S.extra]);
         var changed = sig !== S.regionsSig;
         S.regionsSig = sig;
-        // выброс исчезнувших регионов из выбора
+        // выброс исчезнувших регионов из выбора + кламп qty к доступному количеству
         var live = {};
-        S.regions.forEach(function (r) { live[r.iso] = true; });
-        Object.keys(S.sel).forEach(function (iso) { if (!live[iso]) { delete S.sel[iso]; } });
+        S.regions.forEach(function (r) { live[r.iso] = Number(r.count) || 0; });
+        Object.keys(S.sel).forEach(function (iso) {
+          var c = live[iso] || 0;
+          if (c < 1) delete S.sel[iso];
+          else if (S.sel[iso] > c) S.sel[iso] = c;
+        });
         S.selCount = Object.keys(S.sel).length;
         // факты и помощь
         $('factPrice').textContent = S.price + ' ★';
+        $('factExtra').textContent = '+' + S.extra + ' ★';
         $('factDays').textContent = S.subDays + ' ' + plural(S.subDays, 'ДЕНЬ', 'ДНЯ', 'ДНЕЙ');
         $('helpPrice').textContent = S.price;
+        $('helpExtra').textContent = S.extra;
         $('helpDays').textContent = S.subDays;
         // фильтр при >12 регионов
         var needSearch = S.regions.length > 12;
@@ -511,32 +651,63 @@
     }
   }
 
-  /* ── выбор и панель оплаты ───────────────────────────────────── */
+  /* ── выбор, количество и панель оплаты (SPEC-QTY) ────────────── */
+  /* синхронизация карточки без пересборки флага (img не мигает):
+     класс/aria + только низ (.r-foot: подсказка ↔ степпер) */
+  function updateCard(card, r) {
+    var q = S.sel[r.iso] || 0;
+    card.classList.toggle('on', q > 0);
+    card.setAttribute('aria-pressed', q > 0 ? 'true' : 'false');
+    var foot = card.querySelector('.r-foot');
+    if (foot) foot.innerHTML = footInner(r, q);
+  }
+
+  /* клик по карточке = выбрать q=1; повторный — снять выбор */
   function toggleRegion(iso) {
+    var r = regionByIso(iso);
+    if (!r) return;
     if (S.sel[iso]) delete S.sel[iso];
-    else S.sel[iso] = true;
+    else S.sel[iso] = 1;
     S.selCount = Object.keys(S.sel).length;
-    var card = elGrid.querySelector('[data-iso="' + iso + '"]');
+    var card = elGrid.querySelector('.region[data-iso="' + iso + '"]');
+    if (card) updateCard(card, r);
+    haptic('light');
+    updatePaybar(false);
+  }
+
+  /* шаг степпера [−]/[＋]: q в 1..count; точечное обновление без ререндера */
+  function bumpQty(iso, delta) {
+    var r = regionByIso(iso);
+    if (!r || !S.sel[iso]) return;
+    var count = Math.max(1, Number(r.count) || 1);
+    var q = Math.min(count, Math.max(1, S.sel[iso] + (delta > 0 ? 1 : -1)));
+    if (q === S.sel[iso]) return;
+    S.sel[iso] = q;
+    var card = elGrid.querySelector('.region[data-iso="' + iso + '"]');
     if (card) {
-      card.classList.toggle('on', !!S.sel[iso]);
-      card.setAttribute('aria-pressed', S.sel[iso] ? 'true' : 'false');
+      var v = card.querySelector('.q-val');
+      if (v) v.textContent = q;
+      var mi = card.querySelector('.qbtn.minus');
+      if (mi) mi.disabled = q <= 1;
+      var pl = card.querySelector('.qbtn.plus');
+      if (pl) pl.disabled = q >= count;
+      var pr = card.querySelector('.r-price');
+      if (pr) pr.textContent = fmtNum(S.price + S.extra * (q - 1)) + ' ⭐'; /* цена региона на лету */
     }
     haptic('light');
     updatePaybar(false);
   }
 
-  /* синхронизация классов выбора без пересборки DOM (не сбрасывает hover/анимации) */
   function refreshGridSel() {
     var cards = elGrid.querySelectorAll('.region[data-iso]');
     for (var i = 0; i < cards.length; i++) {
-      var on = !!S.sel[cards[i].getAttribute('data-iso')];
-      cards[i].classList.toggle('on', on);
-      cards[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+      var r = regionByIso(cards[i].getAttribute('data-iso'));
+      if (r) updateCard(cards[i], r);
     }
   }
 
   function selectAll() {
-    S.regions.forEach(function (r) { S.sel[r.iso] = true; });
+    S.regions.forEach(function (r) { if (!S.sel[r.iso]) S.sel[r.iso] = 1; }); /* qty уже выбранных не сбрасываем */
     S.selCount = Object.keys(S.sel).length;
     refreshGridSel();
     haptic('medium');
@@ -548,6 +719,14 @@
     refreshGridSel();
     haptic('light');
     updatePaybar(false);
+  }
+
+  /* стран/серверов в текущем выборе */
+  function selStats() {
+    var isos = Object.keys(S.sel);
+    var servers = 0;
+    for (var i = 0; i < isos.length; i++) servers += S.sel[isos[i]];
+    return { countries: isos.length, servers: servers };
   }
 
   var sumAnim = null;
@@ -569,18 +748,24 @@
   }
 
   function updatePaybar(instant) {
-    var n = S.selCount;
-    /* SPEC-FREE: первые min(free, выбрано) регионов бесплатны (предрасчёт UI,
-       истина — quoteOrder на сервере) */
+    var st = selStats();
+    var n = st.countries;
+    /* SPEC-QTY §1 (предрасчёт UI — истину считает сервер в quoteOrder/reserveOrder):
+       totalCost = Σ(base + extra*(q-1)) = n*base + (servers-n)*extra;
+       SPEC-FREE: free гасит base у первых min(free, стран) регионов, extra остаётся платным */
+    var totalCost = n * S.price + Math.max(0, st.servers - n) * S.extra;
     var freeUsed = Math.min(S.free, n);
-    var payable = Math.max(0, n - S.free);
-    var total = payable * S.price;
-    var line = 'ВЫБРАНО ' + n;
-    if (freeUsed > 0) line += ' · ' + freeUsed + ' БЕСПЛАТНО';
-    line += ' · ИТОГО ' + payable + '×' + S.price + ' ⭐';
+    var total = Math.max(0, totalCost - freeUsed * S.price);
+    var line = 'СТРАН: ' + n + ' · СЕРВЕРОВ: ' + st.servers;
+    if (freeUsed > 0 && n > 0) line += ' · ' + freeUsed + ' БЕСПЛАТНО';
     elPayLine.textContent = line;
-    if (instant) { S.prevSum = total; elPaySum.textContent = fmtNum(total) + ' ⭐'; }
-    else animateSum(total);
+    if (instant) {
+      /* мгновенное обновление гасит бегущий каунт-ап, иначе его хвост
+         перезапишет только что выставленную сумму устаревшим значением */
+      if (sumAnim) { cancelAnimationFrame(sumAnim); sumAnim = null; }
+      S.prevSum = total;
+      elPaySum.textContent = fmtNum(total) + ' ⭐';
+    } else animateSum(total);
     elPayLabel.textContent = (n > 0 && total === 0)
       ? '🎁 ПОЛУЧИТЬ БЕСПЛАТНО'
       : 'ОПЛАТИТЬ ' + fmtNum(total) + ' ⭐';
@@ -605,7 +790,11 @@
   function pay() {
     if (S.payBusy || !S.selCount) return;
     if (!tg || !initData) { showErr('открой мини-апп внутри Telegram, чтобы оплатить'); return; }
-    var regions = Object.keys(S.sel);
+    /* SPEC-QTY: новый формат тела — items:[{iso,qty}]; итог всегда считает сервер */
+    var items = [];
+    Object.keys(S.sel).forEach(function (iso) {
+      items.push({ iso: iso, qty: Math.max(1, Math.floor(Number(S.sel[iso]) || 1)) });
+    });
     setPayBusy(true);
     haptic('medium');
     var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
@@ -613,7 +802,7 @@
     fetch(API + '/order', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: initData, regions: regions }),
+      body: JSON.stringify({ initData: initData, items: items }),
       signal: ctl ? ctl.signal : undefined
     })
       .then(function (r) {
@@ -656,10 +845,18 @@
           toast('счёт открыт в Telegram');
         }
       })
-      .catch(function () {
+      .catch(function (e) {
         if (t) clearTimeout(t);
         setPayBusy(false);
-        showErr('не удалось создать счёт — попробуй ещё раз');
+        /* понятная ошибка сервера (напр., «в регионе осталось меньше серверов»)
+           показывается как есть; сетевые/HTTP — общий текст */
+        var msg = '';
+        if (e && e.message && e.name !== 'AbortError' && e.name !== 'TypeError' &&
+            !/^HTTP \d+$/.test(e.message) && !/^bad payload$/.test(e.message)) {
+          msg = e.message;
+        }
+        showErr(msg || 'не удалось создать счёт — попробуй ещё раз');
+        loadRegions(true); /* освежить счётчики доступного — вдруг выбор устарел */
       });
   }
 
@@ -695,6 +892,7 @@
     elOvl.hidden = false;
     requestAnimationFrame(function () { elOvl.classList.add('in'); });
     updateBackBtn();
+    loadRegions(true); /* SPEC-QTY: тихо обновить витрину (популярность/счётчики) после сделки */
     if (S.successPage) {
       /* ссылка уже есть — /api/me дёргаем только ради обновления free-баланса и списка */
       fetchMe().then(function (orders) { S.orders = orders; }).catch(function () { /* noop */ });
@@ -839,10 +1037,35 @@
       if (b) switchTab(b.getAttribute('data-tab'));
     });
 
-    /* сетка регионов */
+    /* сетка регионов: карточка целиком = выбрать/снять, [−][＋] = количество */
     elGrid.addEventListener('click', function (ev) {
+      var qb = ev.target.closest('.qbtn');
+      if (qb) {
+        var qc = qb.closest('.region');
+        if (qc && !qb.disabled) bumpQty(qc.getAttribute('data-iso'), Number(qb.getAttribute('data-q')) || 0);
+        return;
+      }
+      if (ev.target.closest('.qty')) return; /* тап по цифре степпера — не переключение карточки */
       var card = ev.target.closest('.region');
       if (card && card.hasAttribute('data-iso')) toggleRegion(card.getAttribute('data-iso'));
+    });
+    /* карточки — div[role=button]: Enter/Space работают как клик */
+    elGrid.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+      var t = ev.target;
+      if (t && t.classList && t.classList.contains('region') && t.hasAttribute('data-iso')) {
+        ev.preventDefault();
+        toggleRegion(t.getAttribute('data-iso'));
+      }
+    });
+    /* SPEC-QTY: переключение сортировки витрины */
+    elSortRow.addEventListener('click', function (ev) {
+      var b = ev.target.closest('.sortchip');
+      if (!b) return;
+      var mode = b.getAttribute('data-sort');
+      if (mode === S.sort) return;
+      haptic('light');
+      setSort(mode, true);
     });
     /* stagger — только один раз: после проигрыша снимаем класс и delay,
        иначе display-переключение вкладок перезапускало бы анимацию */
@@ -957,6 +1180,12 @@
     applyChrome();
     syncPrefControls();
     loadPrefsFromCloud();
+    /* SPEC-QTY: сохранённая сортировка (дефолт «Популярные») — до первого рендера */
+    try {
+      var sv = localStorage.getItem(SORT_KEY);
+      if (sv === 'pop' || sv === 'az' || sv === 'count') S.sort = sv;
+    } catch (e) { /* noop */ }
+    syncSortChips();
     bind();
     /* открытый по умолчанию пункт аккордеона — без ограничения высоты */
     var openPanels = document.querySelectorAll('.acc-item.open .acc-panel');

@@ -531,6 +531,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   .stamp { opacity: .35; }
 }
 </style>
+<noscript><style>.loading { display: none !important; }</style></noscript>
 </head>
 <body>
 
@@ -547,7 +548,6 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       <h1>НУЖЕН JAVASCRIPT</h1>
       <p>включи javascript и обнови страницу — квитанция загружается скриптом</p>
     </div>
-    <style>.loading { display: none !important; }</style>
   </noscript>
 
   <!-- загрузка -->
@@ -611,7 +611,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       <div class="qrwrap">
         <i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i>
         <button type="button" class="qrbox" id="qrBtn" title="нажми — крупнее" aria-label="Показать QR-код крупно">
-          <img id="qrImg" alt="QR-код ссылки-подписки" width="176" height="176" decoding="async" fetchpriority="high">
+          <img id="qrImg" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" alt="QR-код ссылки-подписки" width="176" height="176" decoding="async" fetchpriority="high">
         </button>
       </div>
       <div class="qrcap">сканируй из приложения</div>
@@ -668,7 +668,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 
 <div class="qrmodal" id="qrModal" hidden role="dialog" aria-modal="true" aria-label="QR-код крупно" tabindex="-1">
   <figure>
-    <img id="qrBig" alt="QR-код ссылки-подписки крупно">
+    <img id="qrBig" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" alt="QR-код ссылки-подписки крупно">
     <figcaption>сканируй из приложения</figcaption>
   </figure>
 </div>
@@ -937,7 +937,9 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     }
     stamp.hidden = false;
 
-    /* регионы: dotted leaders + svg-флаги с эмодзи-фолбэком */
+    /* регионы: dotted leaders + svg-флаги с эмодзи-фолбэком.
+       SPEC-QTY: count = КУПЛЕННОЕ количество серверов региона (×qty);
+       у старых заказов (без qty) сервер отдаёт доступное — тоже честно */
     var rows = '';
     var regs = d.regions || [];
     for (var i = 0; i < regs.length; i++) {
@@ -948,7 +950,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
           '<span class="flagchip"><img src="/famas/flags/' + esc(lo) + '.svg" alt="" loading="lazy"><i class="flag-fb" hidden>' + esc(r.flag || isoFlag(r.iso)) + '</i></span>' +
           '<span class="rname">' + esc(r.nameRu || r.iso) + '</span>' +
           '<span class="lead"></span>' +
-          '<span class="rcount">' + (Number(r.count) || 0) + ' серв.</span>' +
+          '<span class="rcount">×' + (Number(r.count) || 0) + '</span>' +
         '</div>';
     }
     if (!regs.length) rows += '<div class="rrow"><span class="rname">—</span><span class="lead"></span><span class="rcount">пусто</span></div>';

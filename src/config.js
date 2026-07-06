@@ -35,6 +35,9 @@ const config = {
   ),
   FETCH_INTERVAL_MIN: envNum('FETCH_INTERVAL_MIN', 10),
   DEFAULT_PRICE_STARS: envNum('DEFAULT_PRICE_STARS', 20),
+  // Доп. сервер того же региона (SPEC-QTY §1): 1-й сервер страны = base (priceStars),
+  // каждый следующий сервер той же страны = +extra. Дефолт 10⭐, меняется через /admin.
+  EXTRA_STARS: envNum('EXTRA_STARS', 10),
   DEFAULT_SUB_DAYS: envNum('DEFAULT_SUB_DAYS', 30),
   DB_PATH: envStr('DB_PATH', './data/famas.db'),
   SKIP_BOT: /^(1|true|yes)$/i.test(envStr('SKIP_BOT', '0')) ? 1 : 0,

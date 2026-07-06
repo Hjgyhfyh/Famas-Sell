@@ -83,24 +83,50 @@ function userLabel(from) {
 const SEL_TTL = 2 * 60 * 60 * 1000;    // выбор регионов живёт 2 часа
 const PROMPT_TTL = 30 * 60 * 1000;     // админ-промпты (ForceReply) — 30 минут
 
-/** userId -> { set:Set<ISO>, at:ms } — мультивыбор регионов */
+/** Режимы сортировки витрины (SPEC-QTY §7), циклическая кнопка; дефолт — «Популярные». */
+const SORT_MODES = ['pop', 'az', 'srv'];
+const SORT_LABEL = { pop: 'Популярные', az: 'А-Я', srv: 'Серверов ↓' };
+
+/** userId -> { map:Map<ISO,qty>, sort:'pop'|'az'|'srv', at:ms } — выбор регионов с количеством */
 const selections = new Map();
-/** adminId -> { type:'price'|'days'|'gift'|'bcast', msgId, at:ms } */
+/** adminId -> { type:'price'|'days'|'extra'|'gift'|'bcast', msgId, at:ms } */
 const adminPrompts = new Map();
 /** adminId -> { fromChat, msgId, at:ms } — подготовленная рассылка */
 const pendingBroadcasts = new Map();
 
-function getSelection(userId) {
+/** Состояние выбора юзера: {map:Map<ISO,qty>, sort}. Ленивая подчистка протухшего. */
+function getSelState(userId) {
   const t = Date.now();
-  // ленивая подчистка протухших выборов
   for (const [k, v] of selections) if (t - v.at > SEL_TTL) selections.delete(k);
   let entry = selections.get(userId);
   if (!entry) {
-    entry = { set: new Set(), at: t };
+    entry = { map: new Map(), sort: 'pop', at: t };
     selections.set(userId, entry);
   }
+  if (!(entry.map instanceof Map)) entry.map = new Map();
+  if (!SORT_MODES.includes(entry.sort)) entry.sort = 'pop';
   entry.at = t;
-  return entry.set;
+  return entry;
+}
+
+/** Клиентская сортировка витрины (SPEC-QTY §7/§8): pop / az / srv, стабильный тай-брейк. */
+function sortRegions(regions, mode) {
+  const byName = (a, b) => String(a.nameRu).localeCompare(String(b.nameRu), 'ru');
+  const arr = regions.slice();
+  if (mode === 'az') {
+    arr.sort(byName);
+  } else if (mode === 'srv') {
+    arr.sort((a, b) => (Number(b.count) || 0) - (Number(a.count) || 0) || byName(a, b));
+  } else {
+    // «Популярные»: popularity desc, тай-брейк — count desc, затем имя.
+    arr.sort(
+      (a, b) =>
+        (Number(b.popularity) || 0) - (Number(a.popularity) || 0) ||
+        (Number(b.count) || 0) - (Number(a.count) || 0) ||
+        byName(a, b)
+    );
+  }
+  return arr;
 }
 
 /* ── регионы и заказы: справочные помощники ───────────────────── */
@@ -122,6 +148,17 @@ function parseRegions(order) {
   } catch (e) {
     return [];
   }
+}
+
+/** orders.qty ({iso:count} JSON) → объект или null (старый заказ; SPEC-QTY §3/§7). */
+function parseQtyOf(order) {
+  if (!order || order.qty == null) return null;
+  let o = order.qty;
+  if (typeof o === 'string') {
+    try { o = JSON.parse(o); } catch (e) { return null; }
+  }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+  return Object.keys(o).length ? o : null;
 }
 
 /** Строка флагов заказа: 🇩🇪🇳🇱 */
@@ -214,6 +251,7 @@ function catalogView(isPrivate) {
     console.error('[bot] statsSummary:', errText(e));
   }
   const price = db.priceStars();
+  const extra = db.extraStars();
   const days = db.subDays();
   const text = [
     `${BRAND} · КАТАЛОГ`,
@@ -221,8 +259,8 @@ function catalogView(isPrivate) {
     '01 / VPN-КЛЮЧИ VLESS',
     THIN,
     `Регионов: ${regionsCount} · Серверов: ${serversCount}`,
-    `От ${price} ⭐ за регион · срок ${daysWord(days)}`,
-    'Одна живая ссылка на все регионы:',
+    `От ${price} ⭐ за 1-й сервер · +${extra} ⭐ за доп.`,
+    `Срок ${daysWord(days)} · одна живая ссылка:`,
     'конфиги внутри обновляются сами.',
     '',
     '02 / ─ скоро ─',
@@ -251,43 +289,86 @@ function shopView(userId) {
     return { text, kb: new InlineKeyboard().text('⟳ Проверить ещё раз', 'shop') };
   }
 
-  const sel = getSelection(userId);
-  const known = new Set(regions.map((r) => r.iso));
-  for (const iso of [...sel]) if (!known.has(iso)) sel.delete(iso);
+  const st = getSelState(userId);
+  const selMap = st.map;
+  const knownMap = new Map(regions.map((r) => [r.iso, r]));
+  // подчистка: снять неизвестные, ужать qty до available, снять нулевые
+  for (const iso of [...selMap.keys()]) {
+    const r = knownMap.get(iso);
+    if (!r) { selMap.delete(iso); continue; }
+    let qn = Math.floor(Number(selMap.get(iso)) || 0);
+    if (qn > r.count) qn = r.count;
+    if (qn < 1) { selMap.delete(iso); continue; }
+    selMap.set(iso, qn);
+  }
 
-  const price = db.priceStars();
+  const base = db.priceStars();
+  const extra = db.extraStars();
+  const sorted = sortRegions(regions, st.sort);
   const kb = new InlineKeyboard();
-  regions.forEach((r, i) => {
-    const mark = sel.has(r.iso) ? '☑' : '☐';
+
+  // переключатель сортировки (циклический)
+  kb.text(`⇅ Сортировка: ${SORT_LABEL[st.sort]}`, 'sort').row();
+
+  // выбранные регионы — сверху, со степперами (в порядке текущей сортировки)
+  for (const r of sorted) {
+    if (!selMap.has(r.iso)) continue;
+    const qn = selMap.get(r.iso);
     const flag = r.flag || isoToFlag(r.iso) || '';
-    kb.text(`${mark} ${flag} ${r.nameRu} · ${r.count}`, `r:${r.iso}`);
+    kb.text(`${flag} ${r.nameRu} ×${qn}`, 'noop')
+      .text('−', `q-:${r.iso}`)
+      .text('＋', `q+:${r.iso}`)
+      .text('✕', `r:${r.iso}`)
+      .row();
+  }
+
+  // прочие регионы — сеткой 2-в-ряд (с разумным лимитом кнопок)
+  const rest = sorted.filter((r) => !selMap.has(r.iso));
+  const MAX_GRID = 46;
+  const shown = rest.slice(0, MAX_GRID);
+  const truncated = rest.length - shown.length;
+  shown.forEach((r, i) => {
+    const flag = r.flag || isoToFlag(r.iso) || '';
+    kb.text(`☐ ${flag} ${r.nameRu} · ${r.count}`, `r:${r.iso}`);
     if (i % 2 === 1) kb.row();
   });
-  if (regions.length % 2 === 1) kb.row();
+  if (shown.length % 2 === 1) kb.row();
 
-  const n = sel.size;
-  const q = db.quoteOrder(userId, n);
-  if (q.freeAvail > 0) {
-    kb.text(`🎁 Бесплатных регионов: ${q.freeAvail}`, 'noop').row();
+  const freeAvail = (() => { try { return db.getFree(userId); } catch (e) { return 0; } })();
+  if (freeAvail > 0) kb.text(`🎁 Бесплатных регионов: ${freeAvail}`, 'noop').row();
+
+  // итог — единый расчёт через quoteOrder (чистый, без списания)
+  let q = null;
+  if (selMap.size > 0) {
+    try { q = db.quoteOrder(userId, Object.fromEntries(selMap)); } catch (e) { q = null; }
   }
-  let totalLabel = `▸ Выбрано: ${n} · Итого: ${q.stars} ⭐`;
-  if (q.freeUsed > 0) totalLabel += ` (−${q.freeUsed} бесплатно)`;
-  kb.text(totalLabel, 'noop').row();
-  kb.text('✦ Выбрать всё', 'all').text('✕ Сброс', 'clr').row();
-  if (q.fullyFree) kb.text('🎁 ПОЛУЧИТЬ БЕСПЛАТНО', 'pay');
-  else kb.text(`⭐ ОПЛАТИТЬ ${q.stars}`, 'pay');
+  if (q) {
+    let totalLabel = `▸ Стран: ${q.regionsCount} · Серверов: ${q.servers} · Итого: ${q.stars} ⭐`;
+    if (q.freeUsed > 0) totalLabel += ` (−${q.freeUsed} бесплатно)`;
+    kb.text(totalLabel, 'noop').row();
+    kb.text('✦ Выбрать всё', 'all').text('✕ Сброс', 'clr').row();
+    if (q.fullyFree) kb.text('🎁 ПОЛУЧИТЬ БЕСПЛАТНО', 'pay');
+    else kb.text(`⭐ ОПЛАТИТЬ ${q.stars}`, 'pay');
+  } else {
+    kb.text('▸ Отметь страны ниже', 'noop').row();
+    kb.text('✦ Выбрать всё', 'all');
+  }
 
   const text = [
     BRAND,
     LINE,
-    'В Ы Б О Р   Р Е Г И О Н О В',
+    'В Ы Б О Р   С Е Р В Е Р О В',
     '',
-    'Отметь страны — все выбранные регионы',
-    'соберутся в одну живую ссылку-подписку.',
+    'Отметь страны и число серверов — всё',
+    'соберётся в одну живую ссылку-подписку.',
     '',
-    `Цена: ${price} ⭐ / регион · Срок: ${daysWord(db.subDays())}`,
-    ...(q.freeAvail > 0
-      ? ['', `🎁 У тебя ${regionsWord(q.freeAvail)} бесплатно — спишутся при оформлении.`]
+    `1-й сервер страны: ${base} ⭐ · каждый след.: +${extra} ⭐`,
+    `Срок: ${daysWord(db.subDays())}`,
+    ...(truncated > 0
+      ? ['', `Показаны не все страны (+${truncated}). Смени сортировку или открой Mini App.`]
+      : []),
+    ...(freeAvail > 0
+      ? ['', `🎁 У тебя ${regionsWord(freeAvail)} бесплатно — спишутся при оформлении.`]
       : []),
   ].join('\n');
   return { text, kb };
@@ -413,6 +494,7 @@ function adminPanelView(extraLine) {
     ? `${fmtDateTime(lr.at)} · ${lr.ok ? `● ok (${lr.total})` : `○ ${esc(cut(lr.error || 'ошибка', 80))}`}`
     : '— ещё не было';
   const price = db.priceStars();
+  const extra = db.extraStars();
   const days = db.subDays();
   const lines = [
     `${BRAND} · АДМИН`,
@@ -422,7 +504,8 @@ function adminPanelView(extraLine) {
     `03 / Выручка: <b>${s.revenueStars}</b> ⭐`,
     `04 / Конфигов: <b>${s.activeConfigs}</b> · регионов: <b>${s.regionsCount}</b>`,
     THIN,
-    `Цена: ${price} ⭐ / регион · Срок: ${daysWord(days)}`,
+    `Цена: ${price} ⭐ / 1-й серв · доп. сервер: +${extra} ⭐`,
+    `Срок: ${daysWord(days)}`,
     `Обновление: ${updLine}`,
   ];
   if (extraLine) lines.push(THIN, extraLine);
@@ -430,6 +513,7 @@ function adminPanelView(extraLine) {
     .text('⟳ Обновить базу', 'adm:refresh')
     .row()
     .text(`💰 Цена: ${price}⭐`, 'adm:price')
+    .text(`➕ Доп: ${extra}⭐`, 'adm:extra')
     .text(`🗓 Срок: ${days} дн`, 'adm:days')
     .row()
     .text('📣 Рассылка', 'adm:bcast')
@@ -502,8 +586,24 @@ function ordersListText() {
  */
 async function sendDelivery(api, chatId, order) {
   const isos = parseRegions(order);
+  const qty = parseQtyOf(order); // SPEC-QTY §7: показать ×qty и Серверов внутри = Σqty
   const meta = regionMetaMap();
-  const servers = countServers(isos);
+  let regionsLine;
+  let servers;
+  if (qty) {
+    regionsLine = isos
+      .map((iso) => {
+        const r = meta.get(iso);
+        const flag = (r && r.flag) || isoToFlag(iso) || '';
+        const qn = Number(qty[iso]) || 0;
+        return `${flag} ${esc(regionNameRu(iso, meta))} ×${qn}`.trim();
+      })
+      .join(' · ');
+    servers = isos.reduce((n, iso) => n + (Number(qty[iso]) || 0), 0);
+  } else {
+    regionsLine = regionNamesLine(isos, meta);
+    servers = countServers(isos);
+  }
   const link = subscription.subUrl(order.token);
   const page = subscription.pageUrl(order.token);
   const expired = order.expires_at ? now() > order.expires_at : false;
@@ -522,7 +622,7 @@ async function sendDelivery(api, chatId, order) {
     BRAND,
     LINE,
     `ЗАКАЗ #${order.id} · ${statusWord}`,
-    `Регионы: ${regionNamesLine(isos, meta)}`,
+    `Регионы: ${regionsLine}`,
     `Серверов внутри: ${servers}`,
     tillLine,
     '',
@@ -664,6 +764,20 @@ async function handleDaysReply(ctx) {
   await ctx.reply(`✓ Срок обновлён: <b>${daysWord(n)}</b>.\nПанель: /admin`, msgOpts());
 }
 
+async function handleExtraReply(ctx) {
+  const n = parseInt(((ctx.message && ctx.message.text) || '').trim(), 10);
+  if (!Number.isInteger(n) || n < 0 || n > 10000) {
+    await ctx.reply('✕ Нужно целое число от 0 до 10000. Заново: /admin');
+    return;
+  }
+  db.setExtra(n);
+  try { db.logEvent('extra_change', { extra: n, by: ctx.from.id }); } catch (e) { /* ок */ }
+  await ctx.reply(
+    `✓ Доп. сервер обновлён: <b>${n}</b> ⭐ за каждый сервер сверх первого в стране.\nПанель: /admin`,
+    msgOpts()
+  );
+}
+
 async function handleGiftReply(ctx) {
   const raw = ((ctx.message && ctx.message.text) || '').trim();
   const parts = raw.split(/\s+/).filter(Boolean);
@@ -775,6 +889,7 @@ async function adminReplyRouter(ctx, next) {
   switch (pend.type) {
     case 'price': return handlePriceReply(ctx);
     case 'days': return handleDaysReply(ctx);
+    case 'extra': return handleExtraReply(ctx);
     case 'gift': return handleGiftReply(ctx);
     case 'bcast': return handleBroadcastReply(ctx);
     default: return next();
@@ -1160,9 +1275,10 @@ function createBot() {
 
   /* ── колбэки: выбор регионов ── */
 
+  // r:ISO — переключить регион: не выбран → добавить (qty=1); выбран → снять.
   bot.callbackQuery(/^r:([A-Z]{2})$/, async (ctx) => {
     const iso = ctx.match[1];
-    const sel = getSelection(ctx.from.id);
+    const st = getSelState(ctx.from.id);
     let known = [];
     try {
       known = db.regionsSummary();
@@ -1172,17 +1288,66 @@ function createBot() {
     if (!known.some((r) => r.iso === iso)) {
       await ctx.answerCallbackQuery({ text: 'Этот регион сейчас недоступен.', show_alert: true }).catch(() => {});
     } else {
-      if (sel.has(iso)) sel.delete(iso);
-      else sel.add(iso);
+      if (st.map.has(iso)) st.map.delete(iso);
+      else st.map.set(iso, 1);
       await ctx.answerCallbackQuery().catch(() => {});
     }
     await refreshShopMarkup(ctx);
   });
 
-  bot.callbackQuery('all', async (ctx) => {
-    const sel = getSelection(ctx.from.id);
+  // q+:ISO — увеличить количество серверов региона (максимум = available).
+  bot.callbackQuery(/^q\+:([A-Z]{2})$/, async (ctx) => {
+    const iso = ctx.match[1];
+    const st = getSelState(ctx.from.id);
+    let r = null;
     try {
-      for (const r of db.regionsSummary()) sel.add(r.iso);
+      r = db.regionsSummary().find((x) => x.iso === iso) || null;
+    } catch (e) {
+      console.error('[bot] regionsSummary:', errText(e));
+    }
+    if (!r) {
+      st.map.delete(iso);
+      await ctx.answerCallbackQuery({ text: 'Регион недоступен.', show_alert: true }).catch(() => {});
+      await refreshShopMarkup(ctx);
+      return;
+    }
+    const cur = Math.floor(Number(st.map.get(iso)) || 0);
+    if (cur >= r.count) {
+      await ctx.answerCallbackQuery({ text: `Максимум для «${r.nameRu}»: ${r.count}` }).catch(() => {});
+      return; // ничего не меняем — перерисовка не нужна
+    }
+    st.map.set(iso, cur + 1);
+    await ctx.answerCallbackQuery().catch(() => {});
+    await refreshShopMarkup(ctx);
+  });
+
+  // q-:ISO — уменьшить количество (минимум 1; снятие региона — кнопкой ✕/r:).
+  bot.callbackQuery(/^q-:([A-Z]{2})$/, async (ctx) => {
+    const iso = ctx.match[1];
+    const st = getSelState(ctx.from.id);
+    const cur = Math.floor(Number(st.map.get(iso)) || 0);
+    if (cur <= 1) {
+      await ctx.answerCallbackQuery().catch(() => {});
+      return; // на 1 остаёмся — перерисовка не нужна
+    }
+    st.map.set(iso, cur - 1);
+    await ctx.answerCallbackQuery().catch(() => {});
+    await refreshShopMarkup(ctx);
+  });
+
+  // sort — циклически сменить сортировку витрины (Популярные → А-Я → Серверов ↓).
+  bot.callbackQuery('sort', async (ctx) => {
+    const st = getSelState(ctx.from.id);
+    const i = SORT_MODES.indexOf(st.sort);
+    st.sort = SORT_MODES[(i + 1) % SORT_MODES.length];
+    await ctx.answerCallbackQuery({ text: `Сортировка: ${SORT_LABEL[st.sort]}` }).catch(() => {});
+    await refreshShopMarkup(ctx);
+  });
+
+  bot.callbackQuery('all', async (ctx) => {
+    const st = getSelState(ctx.from.id);
+    try {
+      for (const r of db.regionsSummary()) if (!st.map.has(r.iso)) st.map.set(r.iso, 1);
     } catch (e) {
       console.error('[bot] regionsSummary:', errText(e));
     }
@@ -1191,22 +1356,31 @@ function createBot() {
   });
 
   bot.callbackQuery('clr', async (ctx) => {
-    getSelection(ctx.from.id).clear();
+    getSelState(ctx.from.id).map.clear();
     await ctx.answerCallbackQuery().catch(() => {});
     await refreshShopMarkup(ctx);
   });
 
   bot.callbackQuery('pay', async (ctx) => {
     const uid = ctx.from.id;
-    const sel = getSelection(uid);
+    const st = getSelState(uid);
     let summary = [];
     try {
       summary = db.regionsSummary();
     } catch (e) {
       console.error('[bot] regionsSummary:', errText(e));
     }
-    // валидный выбор — в порядке витрины (по nameRu)
-    const chosen = summary.filter((r) => sel.has(r.iso)).map((r) => r.iso);
+    // qtyMap в порядке текущей сортировки; ужимаем qty до available, битые снимаем
+    const knownMap = new Map(summary.map((r) => [r.iso, r]));
+    const ordered = sortRegions(summary.filter((r) => st.map.has(r.iso)), st.sort);
+    const qtyObj = {};
+    const chosen = [];
+    for (const r of ordered) {
+      let qn = Math.floor(Number(st.map.get(r.iso)) || 0);
+      qn = Math.max(1, Math.min(qn, r.count));
+      qtyObj[r.iso] = qn;
+      chosen.push(r.iso);
+    }
     if (!chosen.length) {
       await ctx
         .answerCallbackQuery({ text: 'Выбери хотя бы один регион ⬛', show_alert: true })
@@ -1217,14 +1391,24 @@ function createBot() {
 
     const days = db.subDays();
     // АТОМАРНОЕ оформление (§7b): free списывается ПРЯМО СЕЙЧАС в одной транзакции,
-    // q.freeUsed — фактически списанное. shopView-превью выше считает quoteOrder (не списывая).
-    const q = db.reserveOrder(uid, chosen.length);
+    // q.freeUsed — фактически списанное. Валидация qty — внутри reserveOrder (бросит → сообщение).
+    let q;
+    try {
+      q = db.reserveOrder(uid, qtyObj);
+    } catch (e) {
+      await ctx.reply(
+        `✕ ${esc((e && e.message) || 'Не удалось оформить заказ')}\nОткрой /vpn и попробуй снова.`,
+        msgOpts()
+      );
+      return;
+    }
 
     // полностью бесплатный заказ: выдаём сразу, БЕЗ инвойса (XTR на 0 нельзя)
     if (q.fullyFree) {
       const created = db.createOrder({
         userId: uid,
         regions: chosen,
+        qty: qtyObj,
         stars: 0,
         status: 'paid',
         days,
@@ -1239,6 +1423,7 @@ function createBot() {
           orderId: created.id,
           userId: uid,
           regions: chosen,
+          qty: qtyObj,
           freeApplied: q.freeUsed,
         });
       } catch (e) { /* ок */ }
@@ -1249,7 +1434,7 @@ function createBot() {
       }
       await notifyAdmins(
         ctx.api,
-        `🎁 Бесплатная выдача #${created.id} · ${userLabel(ctx.from)} · ${regionsWord(chosen.length)}`
+        `🎁 Бесплатная выдача #${created.id} · ${userLabel(ctx.from)} · Стран: ${q.regionsCount} · Серверов: ${q.servers}`
       );
       return;
     }
@@ -1258,6 +1443,7 @@ function createBot() {
     const created = db.createOrder({
       userId: uid,
       regions: chosen,
+      qty: qtyObj,
       stars: q.stars,
       status: 'pending',
       days,
@@ -1266,7 +1452,9 @@ function createBot() {
     const meta = regionMetaMap();
     const flags = chosen.map((iso) => {
       const r = meta.get(iso);
-      return (r && r.flag) || isoToFlag(iso) || iso;
+      const f = (r && r.flag) || isoToFlag(iso) || iso;
+      const qn = qtyObj[iso];
+      return qn > 1 ? `${f}×${qn}` : f;
     }).join(' ');
     let descr = `Регионы: ${flags} · ${daysWord(days)}`;
     if (q.freeUsed > 0) descr += ` · −${q.freeUsed} бесплатно`;
@@ -1274,7 +1462,7 @@ function createBot() {
       ctx,
       cut(descr, 250),
       `order:${created.id}`,
-      `VLESS · ${regionsWord(q.payableCount)}`,
+      `VLESS · ${q.servers} серв. в ${q.regionsCount} стр.`,
       q.stars
     );
   });
@@ -1336,6 +1524,17 @@ function createBot() {
       ctx,
       'price',
       `⁂ ЦЕНА ЗА РЕГИОН\nСейчас: <b>${cur}</b> ⭐.\nОтветь на это сообщение целым числом (1–10000).`,
+      String(cur)
+    );
+  }));
+
+  bot.callbackQuery('adm:extra', guardAdmin(async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const cur = db.extraStars();
+    await askAdmin(
+      ctx,
+      'extra',
+      `⁂ ДОП. СЕРВЕР\nСейчас: <b>${cur}</b> ⭐ за каждый сервер сверх первого в стране.\nОтветь на это сообщение целым числом (0–10000).`,
       String(cur)
     );
   }));

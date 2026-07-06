@@ -87,6 +87,28 @@ function orderRegions(order) {
   return [];
 }
 
+/** orders.qty ({iso:count} JSON) → объект или null (старый заказ; SPEC-QTY §6). */
+function orderQty(order) {
+  if (!order || order.qty == null) return null;
+  let o = order.qty;
+  if (typeof o === 'string') {
+    try {
+      o = JSON.parse(o);
+    } catch (e) {
+      return null;
+    }
+  }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+  return Object.keys(o).length ? o : null;
+}
+
+/** Сумма купленных серверов заказа (Σqty). */
+function sumQty(qty) {
+  let n = 0;
+  if (qty) for (const k of Object.keys(qty)) n += Number(qty[k]) || 0;
+  return n;
+}
+
 /** Заказ «действует»: оплачен/подарен и срок не вышел (§6: expired = now > expires_at). */
 function isOrderActive(order, now) {
   return Boolean(
@@ -164,8 +186,9 @@ function createServer(botApi) {
     const lr = inventory.lastRefresh || null;
     res.json({
       ok: true,
-      regions,
+      regions, // каждый регион уже с popularity (regionsSummary, SPEC-QTY §3/§4)
       price: db.priceStars(),
+      extra: db.extraStars(), // доплата за доп. сервер (SPEC-QTY §6)
       subDays: db.subDays(),
       total,
       updatedAt: lr && lr.at ? lr.at : null
@@ -181,41 +204,50 @@ function createServer(botApi) {
       return res.status(401).json({ ok: false, error: 'Авторизация не пройдена — открой магазин из Telegram' });
     }
 
-    const raw = Array.isArray(body.regions) ? body.regions : null;
-    if (!raw || raw.length === 0) {
+    // Тело заказа — три совместимых формата (SPEC-QTY §6):
+    //   {items:[{iso,qty}]} (предпочтительно) | {qty:{iso:count}} | {regions:[iso]} (каждый qty=1).
+    // Собираем qtyMap {iso:count}; аккуратная валидация ISO/кол-ва.
+    const qtyInput = {};
+    const addQty = (isoRaw, countRaw) => {
+      const iso = String(isoRaw == null ? '' : isoRaw).trim().toUpperCase();
+      if (!/^[A-Z]{2}$/.test(iso)) return { error: 'Некорректный код региона' };
+      const c = Math.floor(Number(countRaw));
+      if (!Number.isFinite(c) || c < 1) return { error: 'Некорректное количество серверов' };
+      qtyInput[iso] = (qtyInput[iso] || 0) + c;
+      return null;
+    };
+
+    if (Array.isArray(body.items)) {
+      for (const it of body.items) {
+        if (!it || typeof it !== 'object') {
+          return res.status(400).json({ ok: false, error: 'Некорректный формат позиции заказа' });
+        }
+        const err = addQty(it.iso, it.qty == null ? 1 : it.qty);
+        if (err) return res.status(400).json({ ok: false, error: err.error });
+      }
+    } else if (body.qty && typeof body.qty === 'object' && !Array.isArray(body.qty)) {
+      for (const [k, v] of Object.entries(body.qty)) {
+        const err = addQty(k, v);
+        if (err) return res.status(400).json({ ok: false, error: err.error });
+      }
+    } else if (Array.isArray(body.regions)) {
+      for (const r of body.regions) {
+        const err = addQty(r, 1); // старый формат: каждый регион = 1 сервер
+        if (err) return res.status(400).json({ ok: false, error: err.error });
+      }
+    }
+
+    const isos = Object.keys(qtyInput);
+    if (isos.length === 0) {
       return res.status(400).json({ ok: false, error: 'Выбери хотя бы один регион' });
     }
-    if (raw.length > 100) {
+    if (isos.length > 100) {
       return res.status(400).json({ ok: false, error: 'Слишком много регионов в одном заказе' });
     }
-
-    const isos = [];
-    const seen = new Set();
-    for (const item of raw) {
-      const iso = String(item || '').trim().toUpperCase();
-      if (!/^[A-Z]{2}$/.test(iso)) {
-        return res.status(400).json({ ok: false, error: 'Некорректный код региона' });
-      }
-      if (!seen.has(iso)) {
-        seen.add(iso);
-        isos.push(iso);
-      }
-    }
-
-    // Регион валиден, если есть активные серверы (count>0) либо запасной конфиг (fallback).
-    const available = new Set((db.regionsSummary() || []).map((r) => r.iso));
-    const missing = isos.filter((iso) => !available.has(iso));
-    if (missing.length > 0) {
-      let withFallback = new Set();
-      try {
-        withFallback = new Set((db.fallbackForRegions(missing) || []).map((c) => c.country_iso));
-      } catch (e) {
-        logErr('order/fallbackForRegions', e);
-      }
-      const dead = missing.filter((iso) => !withFallback.has(iso));
-      if (dead.length > 0) {
-        return res.status(400).json({ ok: false, error: 'Регион недоступен: ' + dead.join(', ') });
-      }
+    let totalServers = 0;
+    for (const iso of isos) totalServers += qtyInput[iso];
+    if (totalServers > 500) {
+      return res.status(400).json({ ok: false, error: 'Слишком много серверов в одном заказе' });
     }
 
     try {
@@ -230,15 +262,22 @@ function createServer(botApi) {
 
     const days = db.subDays();
     // АТОМАРНОЕ оформление со скидкой (§7b): free списывается ПРЯМО СЕЙЧАС в одной
-    // транзакции (не при выдаче) — закрывает абьюз частичной скидки. q.freeUsed —
-    // фактически списанное, инвойс/выдача считаются по q.stars / q.payableCount.
-    const q = db.reserveOrder(auth.user.id, isos.length);
+    // транзакции (не при выдаче) — закрывает абьюз частичной скидки. Валидация qty
+    // (активность региона, 1<=count<=available) — внутри reserveOrder: бросит Error → 400,
+    // free при этом НЕ списывается (валидация до транзакции). q.stars/q.servers — итог.
+    let q;
+    try {
+      q = db.reserveOrder(auth.user.id, qtyInput);
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: (e && e.message) || 'Некорректный заказ' });
+    }
 
     // Полностью бесплатный заказ: выдаём сразу, БЕЗ invoiceLink и без botApi (XTR на 0 нельзя).
     if (q.fullyFree) {
       const created = db.createOrder({
         userId: auth.user.id,
         regions: isos,
+        qty: qtyInput,
         stars: 0,
         status: 'paid',
         days,
@@ -250,7 +289,7 @@ function createServer(botApi) {
       }
       // free уже списан атомарно в reserveOrder (§7b) — повторный consumeFree тут был бы двойным списанием.
       try {
-        db.logEvent('free_order', { orderId: created.id, userId: auth.user.id, regions: isos, freeApplied: q.freeUsed });
+        db.logEvent('free_order', { orderId: created.id, userId: auth.user.id, regions: isos, qty: qtyInput, freeApplied: q.freeUsed });
       } catch (e) {
         logErr('order/logEvent', e);
       }
@@ -260,7 +299,7 @@ function createServer(botApi) {
         orderId: created.id,
         page: subscription.pageUrl(created.token),
         sub: subscription.subUrl(created.token),
-        servers: subConfigsSafe(isos, 'order').length,
+        servers: q.servers, // Σqty
         regions: isos
       });
     }
@@ -269,6 +308,7 @@ function createServer(botApi) {
     const created = db.createOrder({
       userId: auth.user.id,
       regions: isos,
+      qty: qtyInput,
       stars: q.stars,
       status: 'pending',
       days,
@@ -284,13 +324,17 @@ function createServer(botApi) {
     }
 
     const daysWord = plural(days, 'день', 'дня', 'дней');
-    let description = 'Регионы: ' + isos.map((iso) => util.isoToFlag(iso)).join(' ') + ' · ' + days + ' ' + daysWord;
+    // Регионы в описании: флаг + ×N для регионов с несколькими серверами.
+    let description = 'Регионы: ' + isos.map((iso) => {
+      const f = util.isoToFlag(iso) || iso;
+      return qtyInput[iso] > 1 ? f + '×' + qtyInput[iso] : f;
+    }).join(' ') + ' · ' + days + ' ' + daysWord;
     if (q.freeUsed > 0) description += ' · −' + q.freeUsed + ' бесплатно';
     if (description.length > 255) {
-      description = 'Регионы: ' + isos.length + ' · ' + days + ' ' + daysWord;
+      description = 'Серверов: ' + q.servers + ' в ' + q.regionsCount + ' стр. · ' + days + ' ' + daysWord;
       if (q.freeUsed > 0) description += ' · −' + q.freeUsed + ' бесплатно';
     }
-    const label = 'VLESS · ' + q.payableCount + ' ' + plural(q.payableCount, 'регион', 'региона', 'регионов');
+    const label = 'VLESS · ' + q.servers + ' серв. в ' + q.regionsCount + ' стр.';
 
     let invoiceLink;
     try {
@@ -309,7 +353,7 @@ function createServer(botApi) {
     }
 
     try {
-      db.logEvent('order_created', { orderId: created.id, userId: auth.user.id, regions: isos, stars: q.stars, freeApplied: q.freeUsed });
+      db.logEvent('order_created', { orderId: created.id, userId: auth.user.id, regions: isos, qty: qtyInput, stars: q.stars, freeApplied: q.freeUsed });
     } catch (e) {
       logErr('order/logEvent', e);
     }
@@ -319,8 +363,8 @@ function createServer(botApi) {
       invoiceLink: invoiceLink,
       orderId: created.id,
       stars: q.stars,
-      freeApplied: q.freeUsed,
-      payableCount: q.payableCount
+      servers: q.servers, // Σqty
+      freeApplied: q.freeUsed
     });
   }));
 
@@ -335,6 +379,8 @@ function createServer(botApi) {
     const now = nowSec();
     const orders = rows.map(function (o) {
       const regions = orderRegions(o);
+      const qty = orderQty(o); // SPEC-QTY §6: servers = Σqty (для новых) / configs len (старых)
+      const servers = qty ? sumQty(qty) : subConfigsSafe(regions, 'me').length;
       return {
         id: o.id,
         regions: regions,
@@ -344,7 +390,7 @@ function createServer(botApi) {
         active: isOrderActive(o, now),
         page: subscription.pageUrl(o.token),
         sub: subscription.subUrl(o.token),
-        servers: subConfigsSafe(regions, 'me').length
+        servers: servers
       };
     });
 
@@ -367,8 +413,10 @@ function createServer(botApi) {
     }
 
     const isos = orderRegions(order);
+    const qty = orderQty(order); // SPEC-QTY §6: count = купленное qty (для старых — available)
     const rows = subConfigsSafe(isos, 'key');
 
+    // Число серверов на регион по фактически выданным конфигам (для старых заказов).
     const countByIso = new Map();
     for (const c of rows) {
       const iso = c && c.country_iso ? c.country_iso : 'XX';
@@ -389,11 +437,13 @@ function createServer(botApi) {
         const row = rows.find((c) => c && c.country_iso === iso && c.country_name);
         nameRu = util.nameRuOf(iso, row && row.country_name);
       }
+      // count: для нового заказа — купленное qty; для старого — реально выданные серверы.
+      const count = qty ? (Number(qty[iso]) || 0) : (countByIso.get(iso) || 0);
       return {
         iso: iso,
         nameRu: nameRu || iso,
         flag: util.isoToFlag(iso),
-        count: countByIso.get(iso) || 0
+        count: count
       };
     });
 
@@ -403,7 +453,7 @@ function createServer(botApi) {
       orderId: order.id,
       status: order.status,
       regions: regions,
-      servers: rows.length,
+      servers: qty ? sumQty(qty) : rows.length, // Σqty (новые) / configs len (старые)
       expiresAt: order.expires_at || null,
       active: isOrderActive(order, nowSec()),
       sub: sub,

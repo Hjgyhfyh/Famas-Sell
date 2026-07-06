@@ -32,6 +32,21 @@ function safeParseRegions(val) {
   }
 }
 
+/** Разобрать orders.qty ({iso:count} JSON) → объект или null (старый заказ). */
+function safeParseQty(val) {
+  if (val == null) return null;
+  let o = val;
+  if (typeof val === 'string') {
+    try {
+      o = JSON.parse(val);
+    } catch (e) {
+      return null;
+    }
+  }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+  return Object.keys(o).length ? o : null;
+}
+
 /** переписать фрагмент uri на брендовый: FAMAS ⁂ <флаг> <СтранаRu> · <Город> */
 function rebrandUri(row) {
   const ruNameRaw = util.nameRuOf(row.country_iso, row.country_name);
@@ -57,7 +72,12 @@ function buildSub(order) {
 
   let lines = [];
   if (!expired) {
-    const rows = db.configsForRegions(regions).concat(db.fallbackForRegions(regions));
+    // SPEC-QTY §5: заказ с qty → РОВНО купленное число серверов на регион (стабильно
+    // по hash + добор fallback). Старый заказ (qty IS NULL) → прежний путь: все серверы.
+    const qty = safeParseQty(order.qty);
+    const rows = qty
+      ? db.configsForRegionsQty(qty)
+      : db.configsForRegions(regions).concat(db.fallbackForRegions(regions));
     lines = rows.map(rebrandUri);
   }
 

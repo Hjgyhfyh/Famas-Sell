@@ -246,6 +246,24 @@ body.theming, body.theming * {
 .search input:focus { border-color: var(--muted); }
 .search input:focus-visible { outline: none; }
 
+/* SPEC-QTY: сортировка витрины — чипы-пилюли над сеткой */
+.sortrow {
+  display: flex; gap: 8px; padding: 0 18px 12px;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.sortrow::-webkit-scrollbar { display: none; }
+.sortchip {
+  position: relative; flex: none;
+  background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+  color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 11px 15px; white-space: nowrap;
+  transition: transform .15s ease, color .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+.sortchip::before { content: ''; position: absolute; inset: -5px 0; border-radius: 999px; } /* тап ≥44px по вертикали */
+.sortchip:active { transform: scale(.95); }
+.sortchip.active { background: var(--pay-bg); border-color: transparent; color: var(--pay-text); box-shadow: var(--pay-shadow); }
+
 /* ── сетка регионов ── */
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 4px 18px 0; }
 @media (min-width: 560px) { .grid { grid-template-columns: 1fr 1fr 1fr; } }
@@ -254,9 +272,12 @@ body.theming, body.theming * {
   position: relative; text-align: left;
   display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
   background-color: var(--card); border: 1px solid var(--border); border-radius: var(--r-md);
-  padding: 14px 14px 12px; min-height: 104px; color: var(--text);
+  padding: 14px 14px 12px; min-height: 128px; color: var(--text);
+  cursor: pointer; touch-action: manipulation; user-select: none; -webkit-user-select: none;
   transition: transform .15s ease, background-color .18s ease, border-color .18s ease;
 }
+/* SPEC-QTY: плавная FLIP-перестановка карточек при смене сортировки */
+.region.flip { transition: transform .42s var(--ease); }
 .region:active { transform: scale(.97); }
 .region.on { background-color: var(--card2); border-color: var(--accent); box-shadow: 0 6px 18px -12px rgba(0, 0, 0, .6); }
 /* backwards (не forwards): после конца анимации карточка «отпускается» — hover/active работают */
@@ -287,8 +308,26 @@ body.theming, body.theming * {
 .flagchip.sm .flag-fb { font-size: 13px; }
 
 .r-name { font-size: 13px; font-weight: 600; letter-spacing: .01em; padding-right: 26px; }
-.r-count { font-size: 10px; color: var(--dim); letter-spacing: .08em; margin-top: auto; }
+.r-count { font-size: 10px; color: var(--dim); letter-spacing: .08em; }
 .region.on .r-count { color: var(--muted); }
+
+/* SPEC-QTY: низ карточки — цена-подсказка (не выбран) либо степпер [−] q [＋] + живая цена */
+.r-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; min-height: 36px; margin-top: auto; }
+.r-hint { font-size: 12px; color: var(--dim); letter-spacing: .04em; font-variant-numeric: tabular-nums; }
+.qty { display: inline-flex; align-items: center; gap: 5px; }
+.qbtn {
+  position: relative; width: 34px; height: 34px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 11px;
+  color: var(--text); font-family: var(--mono); font-size: 15px; font-weight: 700; line-height: 1;
+  transition: transform .12s ease, opacity .15s ease, border-color .15s ease, background-color .15s ease;
+}
+.qbtn::before { content: ''; position: absolute; inset: -5px; border-radius: 14px; } /* тап-зона ≥44px */
+.qbtn:active { transform: scale(.9); }
+.qbtn:disabled { opacity: .3; cursor: default; transform: none; }
+.q-val { min-width: 20px; text-align: center; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.r-price { font-size: 12px; letter-spacing: .02em; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.region.prev .qbtn { cursor: default; }
 
 /* кастомный чекбокс с пружинкой и прорисовкой галочки */
 .r-check {
@@ -310,15 +349,16 @@ body.theming, body.theming * {
 
 /* скелетоны: повторяют скелет карточки (флаг + имя + счётчик) */
 .skel {
-  min-height: 104px; border-radius: var(--r-md);
+  min-height: 128px; border-radius: var(--r-md);
   border: 1px solid var(--border); background-color: var(--card); position: relative; overflow: hidden;
   background-image:
     linear-gradient(var(--card2), var(--card2)),
     linear-gradient(var(--card2), var(--card2)),
+    linear-gradient(var(--card2), var(--card2)),
     linear-gradient(var(--card2), var(--card2));
   background-repeat: no-repeat;
-  background-size: 34px 26px, 62% 12px, 38% 9px;
-  background-position: 14px 14px, 14px 54px, 14px 78px;
+  background-size: 34px 26px, 62% 12px, 38% 9px, 44% 22px;
+  background-position: 14px 14px, 14px 54px, 14px 74px, 14px 94px;
 }
 .skel::after {
   content: ''; position: absolute; inset: 0;
@@ -414,7 +454,9 @@ body.theming, body.theming * {
 .bar-in { max-width: 640px; margin: 0 auto; display: flex; align-items: center; gap: 12px; padding: 11px 16px; }
 .pinfo { flex: 1; min-width: 0; }
 .pi-top { color: var(--dim); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pi-sum { color: var(--text); font-size: 17px; letter-spacing: .04em; margin-top: 2px; }
+.pi-sum { color: var(--text); font-size: 17px; letter-spacing: .04em; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-sum .pi-lbl { font-size: 10px; color: var(--dim); letter-spacing: .1em; }
+.pi-sum b { font-weight: 700; }
 .paybtn {
   position: relative; border: 0; border-radius: 999px;
   background: var(--pay-bg); color: var(--pay-text);
@@ -579,6 +621,10 @@ body.theming, body.theming * {
 @media (hover: hover) and (pointer: fine) {
   .iconbtn:hover { color: var(--text); border-color: var(--muted); }
   .chip:hover { color: var(--text); border-color: var(--muted); transform: translateY(-1px); }
+  .sortchip:hover { color: var(--text); border-color: var(--muted); }
+  .sortchip.active:hover { color: var(--pay-text); border-color: transparent; }
+  .sortchip:hover:active { transform: scale(.95); }
+  .qbtn:not(:disabled):hover { border-color: var(--muted); }
   .search input:hover { border-color: var(--muted); }
   .region:hover { border-color: var(--muted); transform: translateY(-2px); box-shadow: var(--shadow-card); }
   .region.on:hover { border-color: var(--accent); }
