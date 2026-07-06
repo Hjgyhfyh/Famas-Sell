@@ -308,9 +308,37 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 .rname { font-weight: 600; letter-spacing: .01em; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lead { flex: 1 1 14px; min-width: 14px; border-bottom: 1px dotted var(--tk-dots); transform: translateY(-3px); }
 .rcount { font-family: var(--mono); font-size: 11px; color: var(--tk-mut); letter-spacing: .06em; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rcount .ravail { font-style: normal; font-size: 9px; color: var(--tk-dim); } /* SPEC-HARDEN: «· живых N» при деградации региона */
 .rrow.total { border-top: 1px solid var(--tk-line); margin-top: 6px; padding-top: 10px; }
 .rrow.total .rname { font-family: var(--mono); font-size: 10px; letter-spacing: .18em; font-weight: 400; color: var(--tk-mut); }
 .rrow.total .rcount { color: var(--tk-text); font-weight: 700; font-size: 12px; }
+
+/* ── SPEC-HARDEN ч.1 §4/§5: живые серверы сейчас + кнопка «🔄 ОБНОВИТЬ» ── */
+.livewrap { border-top: 1px solid var(--tk-line); margin-top: 12px; padding-top: 12px; }
+.liverow {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: 10px; letter-spacing: .14em; text-indent: .14em; text-transform: uppercase;
+  color: var(--tk-mut); text-align: center; font-variant-numeric: tabular-nums;
+}
+.liverow b { color: var(--tk-text); font-weight: 700; }
+.liverow.zero { color: var(--tk-dim); }
+.livewarn {
+  text-align: center; font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
+  line-height: 1.8; color: var(--tk-dim); text-transform: uppercase; margin-top: 7px;
+}
+.rfbtn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; min-height: 44px; margin-top: 11px; padding: 13px 12px; /* тап-зона ≥44px */
+  background: transparent; color: var(--tk-text);
+  border: 1px solid var(--tk-line); border-radius: 999px;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase;
+  transition: transform .15s ease, border-color .2s ease, opacity .15s ease;
+}
+.rfbtn:active { transform: scale(.97); }
+.rfbtn[disabled] { opacity: .55; cursor: default; }
+.rfbtn .ric { display: inline-block; font-size: 13px; line-height: 1; }
+.rfbtn.busy .ric { animation: rfspin .8s linear infinite; }
+@keyframes rfspin { to { transform: rotate(360deg); } }
 
 /* флаг-чип: svg 4:3, скругление, внутренняя тень; эмодзи-фолбэк */
 .flagchip {
@@ -462,6 +490,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 @media (hover: hover) and (pointer: fine) {
   .appbtn:hover { transform: translateY(-1px); opacity: .92; }
   .copybtn:hover, .abtn:hover, .buybtn:hover, .qrbox:hover { transform: translateY(-1px); }
+  .rfbtn:not([disabled]):hover { transform: translateY(-1px); border-color: var(--tk-dots); }
   .thbtn:hover { transform: scale(1.12); }
   .linkbox:hover { border-color: var(--tk-dots); }
   .linkbox { -webkit-user-select: all; user-select: all; }
@@ -496,7 +525,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 
 /* ── бережно к укачиванию ── */
 @media (prefers-reduced-motion: reduce) {
-  .bl, .st-dot, .st-dot::after, .ld-mark, .ld-line i { animation: none !important; }
+  .bl, .st-dot, .st-dot::after, .ld-mark, .ld-line i, .rfbtn .ric { animation: none !important; }
   .st-dot::after { display: none; }
   .ticket, .ticket > * { animation: none !important; }
   .ticket::after { display: none; }
@@ -512,7 +541,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   }
   body { background: #fff !important; color: #000 !important; }
   .noise, .frame, .blobs, .foot, .toast, .thsw, .t-apps, .copybtn, .howto,
-  .buywrap, .stage-cap, .desk-note, .st-dot::after,
+  .buywrap, .stage-cap, .desk-note, .st-dot::after, .livewrap,
   .qrmodal, .lifebar, .ticket::after { display: none !important; }
   .stage { padding: 0; min-height: 0; }
   .ticket, .ticket > * { animation: none !important; opacity: 1 !important; }
@@ -602,6 +631,14 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       <div class="cap"><b>01 /</b> регионы</div>
       <div class="stamp mono" id="stamp" hidden aria-hidden="true"></div>
       <div id="regionRows"></div>
+      <!-- SPEC-HARDEN ч.1 §4/§5: живые серверы сейчас + перезапрос статуса -->
+      <div class="livewrap" id="liveWrap" hidden>
+        <div class="liverow mono" id="liveRow"></div>
+        <p class="livewarn" id="liveWarn" hidden></p>
+        <button type="button" class="rfbtn" id="rfBtn" title="перезапросить живые серверы" aria-label="Обновить статус серверов и данные ключа">
+          <span class="ric" aria-hidden="true">🔄</span><span>ОБНОВИТЬ</span>
+        </button>
+      </div>
     </section>
 
     <div class="perf" aria-hidden="true"></div>
@@ -707,6 +744,20 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     if (b > 1 && b < 5) return 'дня';
     if (b === 1) return 'день';
     return 'дней';
+  }
+  /* SPEC-HARDEN: русские формы («1 живой сервер · 2 живых сервера · 5 живых серверов») */
+  function ruForm(n, one, few, many) {
+    var a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return many;
+    if (b > 1 && b < 5) return few;
+    if (b === 1) return one;
+    return many;
+  }
+  /* SPEC-HARDEN: «обновлено HH:MM» — локальное время последнего успешного ответа */
+  function fmtHM(ms) {
+    var d = new Date(ms || Date.now());
+    var p = function (n) { return String(n).padStart(2, '0'); };
+    return p(d.getHours()) + ':' + p(d.getMinutes());
   }
 
   /* ── платформа: порядок сторов и подсказки ── */
@@ -882,6 +933,8 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   function setApp(btnId, lineId, url, html) {
     var a = $(btnId), l = $(lineId);
     if (url) {
+      a.hidden = false; /* рендер может вызываться повторно («🔄 ОБНОВИТЬ») */
+      l.hidden = false;
       a.setAttribute('href', url);
       l.innerHTML = html;
     } else {
@@ -891,6 +944,15 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   }
 
   function render(d) {
+    /* SPEC-HARDEN: рендер зовётся повторно (кнопка «🔄 ОБНОВИТЬ» + тихий авто-перезапрос) —
+       вернуть изменяемые блоки в исходное состояние, чтобы смена статуса не оставляла хвостов */
+    lastFetchedAt = Date.now();
+    $('daysNote').hidden = true;
+    $('deadNote').hidden = true;
+    $('lifeBar').hidden = true;
+    $('buyNewWrap').hidden = true;
+    $('ticket').classList.remove('dead');
+
     document.title = 'FAMAS ⁂ КЛЮЧ № ' + pad6(d.orderId);
     $('orderNo').textContent = 'ЗАКАЗ № ' + pad6(d.orderId);
     $('tailNo').textContent = '№ ' + pad6(d.orderId);
@@ -945,26 +1007,69 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     for (var i = 0; i < regs.length; i++) {
       var r = regs[i];
       var lo = String(r.iso || 'xx').toLowerCase();
+      /* SPEC-HARDEN ч.1 §5: если бэкенд отдал available и живых в регионе меньше купленного —
+         тихо помечаем прямо в строке (серверы заменятся автоматически, см. общую пометку) */
+      var av = Number(r.available);
+      var avHint = (r.available !== undefined && r.available !== null && isFinite(av) && av < (Number(r.count) || 0))
+        ? ' <i class="ravail">· живых ' + Math.max(0, av) + '</i>'
+        : '';
       rows +=
         '<div class="rrow">' +
           '<span class="flagchip"><img src="/famas/flags/' + esc(lo) + '.svg" alt="" loading="lazy"><i class="flag-fb" hidden>' + esc(r.flag || isoFlag(r.iso)) + '</i></span>' +
           '<span class="rname">' + esc(r.nameRu || r.iso) + '</span>' +
           '<span class="lead"></span>' +
-          '<span class="rcount">×' + (Number(r.count) || 0) + '</span>' +
+          '<span class="rcount">×' + (Number(r.count) || 0) + avHint + '</span>' +
         '</div>';
     }
     if (!regs.length) rows += '<div class="rrow"><span class="rname">—</span><span class="lead"></span><span class="rcount">пусто</span></div>';
     rows += '<div class="rrow total"><span class="rname">ВСЕГО СЕРВЕРОВ</span><span class="lead"></span><span class="rcount">' + (Number(d.servers) || 0) + '</span></div>';
     $('regionRows').innerHTML = rows;
 
-    /* QR: проявление после загрузки; при ошибке — прячем секцию */
+    /* SPEC-HARDEN ч.1 §4/§5: «● N живых серверов · обновлено HH:MM» + мягкая пометка.
+       Живые сейчас: liveServers → serversAvailable (Σ min(qty, живые), его отдаёт бэкенд) → servers.
+       Деградация: явный флаг partial/degraded от бэкенда либо живых меньше купленного. */
+    var bought = 0;
+    for (var bi = 0; bi < regs.length; bi++) bought += Number(regs[bi].count) || 0;
+    var rawLive = d.liveServers !== undefined && d.liveServers !== null ? d.liveServers
+      : d.serversAvailable !== undefined && d.serversAvailable !== null ? d.serversAvailable
+      : d.servers;
+    var live = Number(rawLive);
+    if (!isFinite(live) || live < 0) live = 0;
+    lastLive = { live: live, active: !!d.active };
+    var lw = $('liveWrap'), lrow = $('liveRow'), lwarn = $('liveWarn');
+    if (d.active) {
+      lrow.innerHTML = live > 0
+        ? '<span class="st-dot" aria-hidden="true"></span><span><b>' + live + '</b> ' +
+          ruForm(live, 'живой сервер', 'живых сервера', 'живых серверов') +
+          ' · обновлено ' + fmtHM(lastFetchedAt) + '</span>'
+        : '<span>○ живых серверов нет · обновлено ' + fmtHM(lastFetchedAt) + '</span>';
+      lrow.classList.toggle('zero', live === 0);
+      var degraded = d.partial === true || d.degraded === true || (bought > 0 && live < bought);
+      lwarn.textContent = live === 0
+        ? 'серверы временно недоступны — подписка обновится автоматически, загляни позже'
+        : (typeof d.note === 'string' && d.note ? d.note : 'часть серверов временно недоступна — заменятся автоматически');
+      lwarn.hidden = !(degraded || live === 0);
+      lw.hidden = false;
+    } else {
+      lw.hidden = true; /* для истёкших/неоплаченных живость не показываем */
+    }
+
+    /* QR: проявление после загрузки; при ошибке — прячем секцию.
+       Повторный рендер («🔄»): без нужды src не трогаем (QR от токена не меняется),
+       а спрятанную из-за ошибки секцию возвращаем и пробуем загрузить заново свежим запросом */
     var qr = $('qrImg');
+    var qrSec = qr.closest('.t-qr');
     qr.onload = function () { qr.classList.add('ld'); };
     qr.onerror = function () {
-      var sec = qr.closest('.t-qr');
-      if (sec) sec.style.display = 'none';
+      if (qrSec) qrSec.style.display = 'none';
     };
-    qr.src = '/famas/qr/' + encodeURIComponent(token) + '.svg';
+    var qrSrc = '/famas/qr/' + encodeURIComponent(token) + '.svg';
+    if (qrSec && qrSec.style.display === 'none') {
+      qrSec.style.display = '';
+      qr.src = qrSrc + '?r=' + Date.now();
+    } else if (String(qr.getAttribute('src') || '').indexOf(qrSrc) !== 0) {
+      qr.src = qrSrc;
+    }
 
     /* ссылка-подписка */
     var sub = d.sub || '';
@@ -1025,6 +1130,8 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   var m = location.pathname.match(/\/k\/([A-Za-z0-9_-]+)\/?$/);
   var token = m ? m[1] : '';
   var rendered = false;
+  var lastFetchedAt = 0;  /* SPEC-HARDEN: время последнего успешного ответа /api/key */
+  var lastLive = null;    /* SPEC-HARDEN: {live, active} — для тоста «серверы актуальны» */
 
   function load() {
     if (rendered) return;
@@ -1057,6 +1164,72 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   $('btnReload').addEventListener('click', load);
   window.addEventListener('online', function () {
     if (!rendered && !$('loaderr').hidden) load();
+  });
+
+  /* ── SPEC-HARDEN ч.1 §4/§5: «🔄 ОБНОВИТЬ» — перезапросить /famas/api/key и переотрисовать
+     статус/QR/ссылку. Ссылка-подписка не меняется — обновляем данные и заверяем пользователя,
+     что серверы актуальны. Плюс тихий авто-перезапрос раз в минуту, пока вкладка видима. ── */
+  var AUTO_REFRESH_MS = 60000;
+  var refreshing = false;
+
+  function refresh(silent) {
+    if (!rendered || refreshing || !token) return;
+    refreshing = true;
+    var btn = $('rfBtn');
+    if (!silent) {
+      btn.disabled = true;
+      btn.classList.add('busy');
+      btn.setAttribute('aria-busy', 'true');
+    }
+    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var tmr = ctl ? setTimeout(function () { ctl.abort(); }, 15000) : null;
+    fetch('/famas/api/key/' + encodeURIComponent(token), {
+      cache: 'no-store',
+      signal: ctl ? ctl.signal : undefined
+    })
+      .then(function (r) {
+        if (r.status === 404) { var e = new Error('nf'); e.nf = true; throw e; }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        if (!d || !d.ok) { var e = new Error('nf'); e.nf = true; throw e; }
+        render(d);
+        if (!silent) {
+          toast(lastLive && lastLive.active
+            ? (lastLive.live > 0
+              ? 'серверы актуальны · ' + lastLive.live + ' ' + ruForm(lastLive.live, 'живой', 'живых', 'живых')
+              : 'обновлено — живых серверов пока нет')
+            : 'данные ключа обновлены');
+        }
+      })
+      .catch(function (e) {
+        if (e && e.nf) {
+          rendered = false;
+          document.title = 'FAMAS ⁂ ключ не найден';
+          show('notfound');
+        } else if (!silent) {
+          toast('не удалось обновить — попробуй ещё раз');
+        }
+      })
+      .then(function () {
+        if (tmr) clearTimeout(tmr);
+        refreshing = false;
+        btn.disabled = false;
+        btn.classList.remove('busy');
+        btn.removeAttribute('aria-busy');
+      });
+  }
+
+  $('rfBtn').addEventListener('click', function () { refresh(false); });
+
+  /* авто-перезапрос статуса (SPEC-HARDEN ч.1 §4): в фоне не дёргаем, при возврате — догоняем */
+  setInterval(function () {
+    if (document.hidden || !rendered) return;
+    refresh(true);
+  }, AUTO_REFRESH_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && rendered && Date.now() - lastFetchedAt > AUTO_REFRESH_MS) refresh(true);
   });
 
   if (!token) {

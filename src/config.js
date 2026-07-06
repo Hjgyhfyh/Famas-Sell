@@ -44,6 +44,24 @@ const DEFAULT_HOST_BLACKLIST = [
   'workers.dev', 'pagekite.me', 'telebit.io',
 ];
 
+// SPEC-HARDEN ч.2 §1: подстроки UA (lowercase), по которым запрос на /famas/s/:token считаем
+// РЕАЛЬНЫМ VPN-клиентом → отдаём base64-подписку. Проверяется ПЕРВЫМ (важнее блок-листа):
+// если UA содержит любую из этих подстрок — не режем, даже если там есть 'safari' и т.п.
+const DEFAULT_VPN_UA_ALLOW = [
+  'happ', 'v2ray', 'v2rayng', 'v2raytun', 'v2box', 'nekobox', 'nekoray',
+  'sing-box', 'sing_box', 'singbox', 'shadowrocket', 'streisand', 'clash',
+  'stash', 'loon', 'surge', 'karing', 'hiddify', 'foxray', 'sagernet',
+  'matsuri', 'ktor-client', 'ktor',
+];
+
+// SPEC-HARDEN ч.2 §1/§6: подстроки UA (lowercase) явных браузеров/утилит. Такой запрос на
+// /famas/s/:token (и БЕЗ VPN-маркера выше, и без ?app=1) получает страницу-подсказку, а не сырые
+// конфиги. Пустой/незнакомый UA НЕ режем (безопаснее белого списка — не ломаем реальные клиенты).
+const DEFAULT_BROWSER_UA_BLOCK = [
+  'mozilla', 'chrome', 'safari', 'edg', 'curl', 'wget',
+  'python-requests', 'postmanruntime', 'go-http-client',
+];
+
 const config = {
   BOT_TOKEN: envStr('BOT_TOKEN', ''),
   ADMIN_IDS: envStr('ADMIN_IDS', '927937870')
@@ -86,6 +104,20 @@ const config = {
   HEALTHCHECK_TIMEOUT_MS: envNum('HEALTHCHECK_TIMEOUT_MS', 4000),
   // Сколько хостов проверять одновременно (размер пула).
   HEALTHCHECK_CONCURRENCY: envNum('HEALTHCHECK_CONCURRENCY', 24),
+
+  // ── SPEC-HARDEN ч.1: стабильность выданного ключа ──
+  // ОТДЕЛЬНЫЙ таймер healthcheck (помимо refresh источника): мёртвый сервер выпадает из
+  // живых за ≤ этого интервала (мин, дефолт 3). Реагирует быстрее FETCH_INTERVAL_MIN.
+  HEALTHCHECK_INTERVAL_MIN: envNum('HEALTHCHECK_INTERVAL_MIN', 3),
+  // Заголовок подписки profile-update-interval (часы, дефолт 1). Клиенты Happ/v2ray сами
+  // перечитывают подписку по этому интервалу. Клампится к целому ≥1 (клиенты <1 не принимают).
+  SUB_UPDATE_HOURS: Math.max(1, Math.floor(envNum('SUB_UPDATE_HOURS', 1))),
+
+  // ── SPEC-HARDEN ч.2: защита выдачи /famas/s/:token ──
+  // Реальные VPN-клиенты (подстроки UA, lowercase) — им отдаём подписку. env-переопределяемый.
+  VPN_UA_ALLOW: envList('VPN_UA_ALLOW', DEFAULT_VPN_UA_ALLOW),
+  // Явные браузеры/утилиты (подстроки UA, lowercase) — им отдаём страницу-подсказку. env-переопределяемый.
+  BROWSER_UA_BLOCK: envList('BROWSER_UA_BLOCK', DEFAULT_BROWSER_UA_BLOCK),
 };
 
 // Каталог для БД должен существовать до открытия better-sqlite3.

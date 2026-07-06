@@ -675,36 +675,61 @@ function fallbackForRegions(isos) {
 }
 
 /**
- * configsForRegionsQty(qtyMap) -> [config...] (SPEC-QTY §5).
- * Для каждого региона РОВНО count серверов, ДЕТЕРМИНИРОВАННО (стабильно между вызовами):
- *   - активные конфиги региона сортируем по hash ASC, берём первые count;
- *   - если активных < count — добираем из fallback (неактивные, свежие по last_seen) до count;
- *   - если count > доступного (active+fallback) — вернуть сколько есть (подписка не пустеет).
+ * configsForRegionsQty(qtyMap) -> [config...] (SPEC-QTY §5 + SPEC-HARDEN ч.1 §3).
+ * Для каждого региона берём РОВНО min(count, aliveCount) СВЕЖИХ ЖИВЫХ серверов
+ * (active=1 AND alive=1), сорт last_seen DESC затем hash ASC (свежие первыми, стабильный
+ * тай-брейк). Мёртвые (alive=0) в подписку НЕ попадают НИКОГДА, кроме края «0 живых в
+ * регионе» → deep-fallback (1 самый свежий неактивный), чтобы ссылка старого заказа не
+ * пустела. Если живых < count — отдаём сколько есть живых (НЕ добираем мёртвыми): купленный
+ * ключ всегда состоит только из доступных серверов, а «недостающие» подтянутся сами, когда
+ * серверы региона оживут (клиент перечитает подписку).
  * qtyMap = {iso:count} | Map | массив ISO (count=1). Мягкая нормализация (не бросает).
  */
 function configsForRegionsQty(qtyMap) {
   const map = normalizeQtyLenient(qtyMap);
   const out = [];
-  // SPEC-QUALITY §3: РОВНО count из ЖИВЫХ (active=1 AND alive=1), стабильно по hash.
-  const selActive = stmt(
-    `SELECT * FROM configs WHERE active=1 AND alive=1 AND country_iso=? ORDER BY hash ASC`
+  const selAlive = stmt(
+    `SELECT * FROM configs WHERE active=1 AND alive=1 AND country_iso=?
+      ORDER BY last_seen DESC, hash ASC`
   );
   const selFallback = stmt(
-    `SELECT * FROM configs WHERE active=0 AND country_iso=? ORDER BY last_seen DESC, hash ASC`
+    `SELECT * FROM configs WHERE active=0 AND country_iso=?
+      ORDER BY last_seen DESC, hash ASC LIMIT 1`
   );
   for (const [iso, count] of map) {
     if (count < 1) continue;
-    const active = selActive.all(iso);
-    let chosen = active.slice(0, count);
-    if (chosen.length < count) {
-      const need = count - chosen.length;
-      const have = new Set(chosen.map((c) => c.hash));
-      const fb = selFallback.all(iso).filter((c) => !have.has(c.hash)).slice(0, need);
-      chosen = chosen.concat(fb);
+    const alive = selAlive.all(iso);
+    if (alive.length > 0) {
+      const take = Math.min(count, alive.length); // ровно min(qty, aliveCount)
+      for (let i = 0; i < take; i++) out.push(alive[i]);
+    } else {
+      // край: живых в регионе нет — 1 самый свежий неактивный (deep-fallback, как раньше)
+      const fb = selFallback.get(iso);
+      if (fb) out.push(fb);
     }
-    for (const c of chosen) out.push(c);
   }
   return out;
+}
+
+/**
+ * aliveCountForRegions(isos) -> Map<iso, число живых серверов> (SPEC-HARDEN ч.1 §3/§5).
+ * Живой = active=1 AND alive=1. Для показа «сейчас в ключе N доступных серверов» в выдаче
+ * бота, /api/key и /api/me. Регионы без живых в Map отсутствуют (считать как 0).
+ */
+function aliveCountForRegions(isos) {
+  const list = (Array.isArray(isos) ? isos : [])
+    .map((s) => String(s == null ? '' : s).trim().toUpperCase())
+    .filter((s) => /^[A-Z]{2}$/.test(s));
+  const map = new Map();
+  if (!list.length) return map;
+  const uniq = [...new Set(list)];
+  const ph = uniq.map(() => '?').join(',');
+  const rows = stmt(
+    `SELECT country_iso AS iso, COUNT(*) AS count FROM configs
+      WHERE active=1 AND alive=1 AND country_iso IN (${ph}) GROUP BY country_iso`
+  ).all(...uniq);
+  for (const r of rows) map.set(r.iso, Number(r.count) || 0);
+  return map;
 }
 
 /* ─────────────── здоровье серверов: alive (SPEC-QUALITY §3/§4) ─────────────── */
@@ -1066,6 +1091,7 @@ module.exports = {
   configsForRegions,
   fallbackForRegions,
   configsForRegionsQty,
+  aliveCountForRegions,
   hostsToCheck,
   setAliveByHostPort,
   setAliveByHostPattern,

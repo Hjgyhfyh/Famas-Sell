@@ -20,7 +20,11 @@ const HEALTHCHECK_MAX_DEAD_FRACTION = 0.85;
 const lastRefresh = { at: 0, ok: false, total: 0, alive: 0, error: null };
 
 let timer = null;
+let hcTimer = null;
 let inflight = null;
+// SPEC-HARDEN ч.1 §2: single-flight флаг healthcheck — чтобы отдельный периодический прогон
+// и прогон после refresh НЕ накладывались друг на друга.
+let hcInflight = false;
 
 function nowSec() {
   return Math.floor(Date.now() / 1000);
@@ -202,6 +206,22 @@ async function runHealthcheck() {
   }
 }
 
+/**
+ * SPEC-HARDEN ч.1 §2: обёртка runHealthcheck с single-flight флагом. Два прогона
+ * (периодический таймер + прогон после refresh) не накладываются — второй тихо пропускается,
+ * уже идущий и так обновит alive. Ошибки внутри runHealthcheck уже проглочены.
+ */
+async function runHealthcheckGuarded() {
+  if (hcInflight) return false;
+  hcInflight = true;
+  try {
+    await runHealthcheck();
+    return true;
+  } finally {
+    hcInflight = false;
+  }
+}
+
 async function doRefresh() {
   try {
     const text = await loadSourceText();
@@ -236,7 +256,8 @@ async function doRefresh() {
 
     // SPEC-QUALITY §4: прогон здоровья каждый refresh (в т.ч. при неизменившемся
     // источнике — сервер мог отвалиться с прошлой проверки). Не роняет процесс.
-    await runHealthcheck();
+    // SPEC-HARDEN ч.1 §2: через guarded — не накладывается на периодический прогон.
+    await runHealthcheckGuarded();
 
     let alive = 0;
     try {
@@ -294,6 +315,15 @@ function start() {
     refreshNow().catch(() => {});
   }, ms);
   if (timer && typeof timer.unref === 'function') timer.unref();
+
+  // SPEC-HARDEN ч.1 §2: ОТДЕЛЬНЫЙ, более частый таймер healthcheck (помимо refresh источника).
+  // Мёртвый сервер выпадает из живых за ≤HEALTHCHECK_INTERVAL_MIN, а не ждёт FETCH_INTERVAL_MIN.
+  // guarded → не накладывается на прогон после refresh; .unref() → не держит процесс; ошибки глотаем.
+  const hcMs = Math.max(1, Number(config.HEALTHCHECK_INTERVAL_MIN) || 3) * 60 * 1000;
+  hcTimer = setInterval(() => {
+    runHealthcheckGuarded().catch(() => {});
+  }, hcMs);
+  if (hcTimer && typeof hcTimer.unref === 'function') hcTimer.unref();
 }
 
-module.exports = { start, refreshNow, lastRefresh };
+module.exports = { start, refreshNow, runHealthcheck: runHealthcheckGuarded, lastRefresh };

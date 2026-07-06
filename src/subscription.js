@@ -85,7 +85,8 @@ function buildSub(order) {
 
   const headers = {
     'profile-title': 'base64:' + util.b64utf8('⁂ FAMAS STORE'),
-    'profile-update-interval': '1',
+    // SPEC-HARDEN ч.1 §3: интервал перечитывания подписки клиентом (часы), из config (дефолт 1).
+    'profile-update-interval': String(config.SUB_UPDATE_HOURS),
     'subscription-userinfo': `upload=0; download=0; total=0; expire=${Number(order.expires_at || 0)}`,
     'profile-web-page-url': pageUrl(order.token),
     'support-url': 'https://t.me/' + config.SUPPORT_USERNAME,

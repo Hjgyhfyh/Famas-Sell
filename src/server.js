@@ -41,6 +41,69 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 // Токены заказов — base64url от randomBytes(16) → 22 символа; берём с запасом.
 const TOKEN_RE = /^[A-Za-z0-9_-]{8,128}$/;
 
+/* ──────────────── SPEC-HARDEN ч.2 §1: UA-gate на /famas/s/:token ──────────────── */
+
+// Списки маркеров — из config (env-переопределяемые). allow — реальные VPN-клиенты,
+// block — явные браузеры/утилиты.
+const VPN_UA_ALLOW = Array.isArray(config.VPN_UA_ALLOW) ? config.VPN_UA_ALLOW : [];
+const BROWSER_UA_BLOCK = Array.isArray(config.BROWSER_UA_BLOCK) ? config.BROWSER_UA_BLOCK : [];
+
+/**
+ * «Похоже на браузер/утилиту» → отдать страницу-подсказку вместо сырой подписки.
+ * Порядок важен: СНАЧАЛА allow (реальный VPN-клиент по подстроке → НЕ режем, даже если в UA
+ * затесались 'safari'/'mozilla'), ЗАТЕМ block (явный браузер/утилита → режем). Пустой и
+ * незнакомый UA → НЕ режем (пропускаем к подписке) — безопаснее белого списка, не ломает
+ * реальные приложения (SPEC-HARDEN ч.2 §1: резать только явные браузеры/утилиты).
+ */
+function isBrowserLikeUA(ua) {
+  const s = String(ua == null ? '' : ua).toLowerCase();
+  if (!s) return false; // пустой UA — многие клиенты его не шлют → пропускаем
+  for (const m of VPN_UA_ALLOW) if (m && s.includes(m)) return false; // реальный VPN-клиент
+  for (const b of BROWSER_UA_BLOCK) if (b && s.includes(b)) return true; // браузер/утилита
+  return false; // незнакомый UA — пропускаем к подписке
+}
+
+/** ?app=1 / app=true / заголовок X-Famas-App:1 — форс-выдача подписки (для наших deep-link кнопок). */
+function forcesAppDelivery(req) {
+  const a = req.query && req.query.app;
+  if (a === '1' || a === 'true') return true;
+  return String(req.get('X-Famas-App') || '') === '1';
+}
+
+/** Маленькая ЧБ страница-подсказка «открой в приложении» вместо сырых конфигов (self-contained). */
+function subGateStubHtml(pageUrlStr) {
+  const href = String(pageUrlStr || '')
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return [
+    '<!doctype html><html lang="ru"><head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">',
+    '<meta name="robots" content="noindex,nofollow">',
+    '<title>FAMAS STORE — подписка</title>',
+    '<style>',
+    ':root{color-scheme:dark}*{box-sizing:border-box}',
+    "body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:24px}",
+    '.card{max-width:420px;width:100%;border:1px solid #1a1a1a;padding:28px 24px;text-align:center}',
+    ".brand{font-family:Georgia,'Times New Roman',serif;font-size:22px;letter-spacing:.04em;margin:0 0 6px}",
+    '.rule{height:1px;background:#1a1a1a;margin:16px 0}',
+    'h1{font-size:14px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;margin:0 0 12px}',
+    'p{font-size:14px;line-height:1.55;color:#999;margin:0 0 10px}',
+    ".mono{font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:12px;color:#666}",
+    'a.btn{display:block;margin-top:18px;padding:14px;background:#fff;color:#000;text-decoration:none;font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:13px}',
+    '.foot{margin-top:16px;font-size:11px;color:#444}',
+    '</style></head><body><div class="card">',
+    '<div class="brand">FAMAS STORE ⁂</div>',
+    '<div class="rule"></div>',
+    '<h1>Это ссылка-подписка</h1>',
+    '<p>Её нужно открыть в VPN-приложении (Happ · v2rayTun · v2rayNG), а не в браузере.</p>',
+    '<p class="mono">На странице ключа — кнопки для приложений и QR-код.</p>',
+    '<a class="btn" href="' + href + '">Открыть страницу ключа</a>',
+    '<div class="foot">⁂ FAMAS STORE</div>',
+    '</div></body></html>',
+  ].join('');
+}
+
 /* ────────────────────────────── помощники ────────────────────────────── */
 
 function nowSec() {
@@ -481,6 +544,19 @@ function createServer(botApi) {
       const regions = orderRegions(o);
       const qty = orderQty(o); // SPEC-QTY §6: servers = Σqty (для новых) / configs len (старых)
       const servers = qty ? sumQty(qty) : subConfigsSafe(regions, 'me').length;
+      // SPEC-HARDEN ч.1 §5: доступно живых сейчас (Σ по регионам min(qty, aliveCount)).
+      let serversAvailable = servers;
+      try {
+        const alive = db.aliveCountForRegions(regions);
+        let a = 0;
+        for (const iso of regions) {
+          const av = Number(alive.get(iso)) || 0;
+          a += qty ? Math.min(Number(qty[iso]) || 0, av) : av;
+        }
+        serversAvailable = a;
+      } catch (e) {
+        logErr('me/aliveCountForRegions', e);
+      }
       return {
         id: o.id,
         regions: regions,
@@ -490,7 +566,8 @@ function createServer(botApi) {
         active: isOrderActive(o, now),
         page: subscription.pageUrl(o.token),
         sub: subscription.subUrl(o.token),
-        servers: servers
+        servers: servers,
+        serversAvailable: serversAvailable
       };
     });
 
@@ -550,6 +627,16 @@ function createServer(botApi) {
       logErr('key/regionsSummary', e);
     }
 
+    // SPEC-HARDEN ч.1 §5: число ДОСТУПНЫХ (живых) серверов по регионам сейчас.
+    const aliveCount = (() => {
+      try {
+        return db.aliveCountForRegions(isos);
+      } catch (e) {
+        logErr('key/aliveCountForRegions', e);
+        return new Map();
+      }
+    })();
+
     const regions = isos.map(function (iso) {
       const s = summaryByIso.get(iso);
       let nameRu = s && s.nameRu ? s.nameRu : null;
@@ -559,27 +646,42 @@ function createServer(botApi) {
       }
       // count: для нового заказа — купленное qty; для старого — реально выданные серверы.
       const count = qty ? (Number(qty[iso]) || 0) : (countByIso.get(iso) || 0);
+      // available: доступно живых сейчас; для нового — не больше купленного (min(qty, aliveCount)).
+      const alive = Number(aliveCount.get(iso)) || 0;
+      const available = qty ? Math.min(count, alive) : alive;
       return {
         iso: iso,
         nameRu: nameRu || iso,
         flag: util.isoToFlag(iso),
-        count: count
+        count: count,
+        available: available
       };
     });
 
+    // servers — купленное (совместимость); serversAvailable — Σ по регионам min(qty, aliveCount).
+    const serversPurchased = qty ? sumQty(qty) : rows.length;
+    let serversAvailable = 0;
+    for (const r of regions) serversAvailable += Number(r.available) || 0;
+    const partial = serversAvailable < serversPurchased;
+
     const sub = subscription.subUrl(order.token);
+    const lr = inventory.lastRefresh || null;
     res.json({
       ok: true,
       orderId: order.id,
       status: order.status,
       regions: regions,
-      servers: qty ? sumQty(qty) : rows.length, // Σqty (новые) / configs len (старые)
+      servers: serversPurchased,          // Σqty (новые) / configs len (старые) — купленное
+      serversAvailable: serversAvailable, // доступно живых сейчас (SPEC-HARDEN ч.1 §5)
+      partial: partial,                   // доступно меньше купленного (часть серверов недоступна)
+      note: partial ? 'Часть серверов временно недоступна — заменятся автоматически.' : null,
       expiresAt: order.expires_at || null,
       active: isOrderActive(order, nowSec()),
       sub: sub,
       page: subscription.pageUrl(order.token),
       links: subscription.deepLinks(sub),
-      createdAt: order.created_at || null
+      createdAt: order.created_at || null,
+      updatedAt: lr && lr.at ? lr.at : null // время последнего обновления базы (для «обновлено HH:MM»)
     });
   });
 
@@ -591,11 +693,23 @@ function createServer(botApi) {
       return res.status(404).type('text/plain; charset=utf-8').send('not found');
     }
 
+    // SPEC-HARDEN ч.1 §3: /s не кешируем никогда (контент живой). Ставим до любой ветки.
+    res.set('Cache-Control', 'no-store');
+
+    // SPEC-HARDEN ч.2 §1: UA-gate. Явный браузер/утилита (Mozilla/Chrome/Safari/curl/…) БЕЗ
+    // ?app=1 и без VPN-маркера → страница-подсказку, НЕ сырые vless. Реальные VPN-клиенты (по
+    // VPN_UA_ALLOW), незнакомые и пустые UA — обычную base64-подписку. Deep-links Happ/v2rayTun
+    // открывают приложение, которое само дёрнет /s со своим UA → пройдут gate.
+    if (!forcesAppDelivery(req) && isBrowserLikeUA(req.get('user-agent'))) {
+      res.set('Content-Type', 'text/html; charset=utf-8');
+      return res.status(200).send(subGateStubHtml(subscription.pageUrl(order.token)));
+    }
+
     const sub = subscription.buildSub(order);
     if (sub && sub.headers && typeof sub.headers === 'object') {
       res.set(sub.headers);
     }
-    res.set('Cache-Control', 'no-store'); // контент живой — кешировать нельзя
+    res.set('Cache-Control', 'no-store'); // buildSub мог не выставить — гарантируем no-store
     res.set('Content-Type', 'text/plain; charset=utf-8');
     res.send(sub && typeof sub.b64 === 'string' ? sub.b64 : '');
   });

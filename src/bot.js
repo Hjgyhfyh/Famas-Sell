@@ -674,8 +674,13 @@ async function sendDelivery(api, chatId, order) {
   const isos = parseRegions(order);
   const qty = parseQtyOf(order); // SPEC-QTY §7: показать ×qty и Серверов внутри = Σqty
   const meta = regionMetaMap();
+  // SPEC-HARDEN ч.1 §5: показываем число ДОСТУПНЫХ (живых) серверов сейчас, а не купленных.
+  const aliveMap = (() => {
+    try { return db.aliveCountForRegions(isos); } catch (e) { return new Map(); }
+  })();
   let regionsLine;
-  let servers;
+  let purchased; // купленное серверов
+  let available; // доступно живых сейчас
   if (qty) {
     regionsLine = isos
       .map((iso) => {
@@ -685,11 +690,21 @@ async function sendDelivery(api, chatId, order) {
         return `${flag} ${esc(regionNameRu(iso, meta))} ×${qn}`.trim();
       })
       .join(' · ');
-    servers = isos.reduce((n, iso) => n + (Number(qty[iso]) || 0), 0);
+    purchased = isos.reduce((n, iso) => n + (Number(qty[iso]) || 0), 0);
+    available = isos.reduce(
+      (n, iso) => n + Math.min(Number(qty[iso]) || 0, Number(aliveMap.get(iso)) || 0),
+      0
+    );
   } else {
     regionsLine = regionNamesLine(isos, meta);
-    servers = countServers(isos);
+    purchased = countServers(isos);
+    available = isos.reduce((n, iso) => n + (Number(aliveMap.get(iso)) || 0), 0);
+    if (available > purchased) available = purchased; // старый заказ: не превышаем показанное
   }
+  const partial = available < purchased;
+  const serversLine = partial
+    ? `Серверов внутри: ${available} из ${purchased}`
+    : `Серверов внутри: ${available}`;
   const link = subscription.subUrl(order.token);
   const page = subscription.pageUrl(order.token);
   const expired = order.expires_at ? now() > order.expires_at : false;
@@ -709,7 +724,8 @@ async function sendDelivery(api, chatId, order) {
     LINE,
     `ЗАКАЗ #${order.id} · ${statusWord}`,
     `Регионы: ${regionsLine}`,
-    `Серверов внутри: ${servers}`,
+    serversLine,
+    ...(partial ? ['△ часть серверов временно недоступна — заменятся автоматически'] : []),
     tillLine,
     '',
     'ТВОЯ ССЫЛКА — ОДНА НА ВСЁ:',
@@ -720,8 +736,12 @@ async function sendDelivery(api, chatId, order) {
     'Happ / v2rayTun / v2rayNG и QR-код.',
   ].join('\n');
 
+  // SPEC-HARDEN ч.1 §4: «🔄 Обновить серверы» заново шлёт актуальную выдачу (ссылка не меняется,
+  // но пересобирается число живых серверов). Реюзаем key:<id> — тот же путь, что «Ключ #N» в профиле.
   const kb = new InlineKeyboard()
     .url('⬛ СТРАНИЦА КЛЮЧА', page)
+    .row()
+    .text('🔄 Обновить серверы', `key:${order.id}`)
     .row()
     .text('❓ Как подключить', 'help')
     .text('👤 Профиль', 'profile');
