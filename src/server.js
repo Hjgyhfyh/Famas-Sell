@@ -218,9 +218,9 @@ function createServer(botApi) {
       }
     }
 
-    const price = db.priceStars();
     const days = db.subDays();
-    const stars = price * isos.length;
+    // единый расчёт цены со скидкой (§3): те же числа, что видит бот
+    const q = db.quoteOrder(auth.user.id, isos.length);
 
     try {
       db.upsertUser({
@@ -232,12 +232,49 @@ function createServer(botApi) {
       logErr('order/upsertUser', e); // не критично для заказа
     }
 
+    // Полностью бесплатный заказ: выдаём сразу, БЕЗ invoiceLink и без botApi (XTR на 0 нельзя).
+    if (q.fullyFree) {
+      const created = db.createOrder({
+        userId: auth.user.id,
+        regions: isos,
+        stars: 0,
+        status: 'paid',
+        days,
+        freeApplied: q.freeUsed,
+        chargeId: 'FREE'
+      });
+      if (!created || !created.id) {
+        return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
+      }
+      try {
+        db.consumeFree(auth.user.id, q.freeUsed);
+      } catch (e) {
+        logErr('order/consumeFree', e);
+      }
+      try {
+        db.logEvent('free_order', { orderId: created.id, userId: auth.user.id, regions: isos, freeApplied: q.freeUsed });
+      } catch (e) {
+        logErr('order/logEvent', e);
+      }
+      return res.json({
+        ok: true,
+        free: true,
+        orderId: created.id,
+        page: subscription.pageUrl(created.token),
+        sub: subscription.subUrl(created.token),
+        servers: subConfigsSafe(isos, 'order').length,
+        regions: isos
+      });
+    }
+
+    // Обычная (в т.ч. частичная) оплата: pending + инвойс только на платную часть.
     const created = db.createOrder({
       userId: auth.user.id,
       regions: isos,
-      stars,
+      stars: q.stars,
       status: 'pending',
-      days
+      days,
+      freeApplied: q.freeUsed
     });
     if (!created || !created.id) {
       return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
@@ -250,10 +287,12 @@ function createServer(botApi) {
 
     const daysWord = plural(days, 'день', 'дня', 'дней');
     let description = 'Регионы: ' + isos.map((iso) => util.isoToFlag(iso)).join(' ') + ' · ' + days + ' ' + daysWord;
+    if (q.freeUsed > 0) description += ' · −' + q.freeUsed + ' бесплатно';
     if (description.length > 255) {
       description = 'Регионы: ' + isos.length + ' · ' + days + ' ' + daysWord;
+      if (q.freeUsed > 0) description += ' · −' + q.freeUsed + ' бесплатно';
     }
-    const label = 'VLESS · ' + isos.length + ' ' + plural(isos.length, 'регион', 'региона', 'регионов');
+    const label = 'VLESS · ' + q.payableCount + ' ' + plural(q.payableCount, 'регион', 'региона', 'регионов');
 
     let invoiceLink;
     try {
@@ -264,7 +303,7 @@ function createServer(botApi) {
         'order:' + created.id,
         '', // provider_token пустой — оплата в Telegram Stars
         'XTR',
-        [{ label: label, amount: stars }]
+        [{ label: label, amount: q.stars }]
       );
     } catch (e) {
       logErr('order/createInvoiceLink', e);
@@ -272,12 +311,19 @@ function createServer(botApi) {
     }
 
     try {
-      db.logEvent('order_created', { orderId: created.id, userId: auth.user.id, regions: isos, stars: stars });
+      db.logEvent('order_created', { orderId: created.id, userId: auth.user.id, regions: isos, stars: q.stars, freeApplied: q.freeUsed });
     } catch (e) {
       logErr('order/logEvent', e);
     }
 
-    res.json({ ok: true, invoiceLink: invoiceLink, orderId: created.id });
+    res.json({
+      ok: true,
+      invoiceLink: invoiceLink,
+      orderId: created.id,
+      stars: q.stars,
+      freeApplied: q.freeUsed,
+      payableCount: q.payableCount
+    });
   }));
 
   /* GET /famas/api/me?initData=... — заказы владельца initData (paid|gift). */
@@ -304,7 +350,14 @@ function createServer(botApi) {
       };
     });
 
-    res.json({ ok: true, orders: orders });
+    let free = 0;
+    try {
+      free = db.getFree(auth.user.id);
+    } catch (e) {
+      logErr('me/getFree', e);
+    }
+
+    res.json({ ok: true, orders: orders, free: free });
   });
 
   /* GET /famas/api/key/:token — данные ключа для страницы товара (key.html). */

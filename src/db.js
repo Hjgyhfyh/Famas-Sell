@@ -52,7 +52,27 @@ function init() {
   db = new Database(config.DB_PATH);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
+  migrate();
   return db;
+}
+
+/** Есть ли колонка в таблице — для идемпотентных миграций (PRAGMA table_info). */
+function columnExists(table, column) {
+  const cols = db.pragma(`table_info(${table})`);
+  return Array.isArray(cols) && cols.some((c) => c && c.name === column);
+}
+
+/**
+ * Идемпотентные миграции схемы (SPEC-FREE §2). ALTER выполняется только если
+ * колонки ещё нет — на уже существующей БД ничего не ломает и не падает.
+ */
+function migrate() {
+  if (!columnExists('users', 'free_regions')) {
+    db.exec('ALTER TABLE users ADD COLUMN free_regions INTEGER DEFAULT 0');
+  }
+  if (!columnExists('orders', 'free_applied')) {
+    db.exec('ALTER TABLE orders ADD COLUMN free_applied INTEGER DEFAULT 0');
+  }
 }
 
 /* ───────────────────── users ───────────────────── */
@@ -79,6 +99,88 @@ function getUser(id) {
 
 function allUserIds() {
   return stmt('SELECT id FROM users ORDER BY id').all().map((r) => r.id);
+}
+
+/* ───────────────── бесплатные регионы (скидка, SPEC-FREE §3) ───────────────── */
+
+/** Текущий пул бесплатных регионов юзера; 0 если юзера нет. */
+function getFree(userId) {
+  const row = stmt('SELECT free_regions FROM users WHERE id=?').get(Number(userId));
+  return row ? Number(row.free_regions) || 0 : 0;
+}
+
+/**
+ * Установить пул (SET, не add). Апсертит user-строку при отсутствии
+ * (first_seen/last_seen=now если создаём). Значение не ниже 0. Возвращает установленное.
+ */
+function setFree(userId, n) {
+  const id = Number(userId);
+  const val = Math.max(0, Math.floor(Number(n) || 0));
+  const t = now();
+  stmt(
+    `INSERT INTO users(id, free_regions, first_seen, last_seen)
+     VALUES(?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET free_regions=excluded.free_regions`
+  ).run(id, val, t, t);
+  return val;
+}
+
+/** Прибавить к пулу (может быть отрицательным); итог не ниже 0. Возвращает новое значение. */
+function addFree(userId, delta) {
+  const next = getFree(userId) + Math.floor(Number(delta) || 0);
+  return setFree(userId, next);
+}
+
+/** Списать min(текущее, max(0,n)); вернуть фактически списанное. Не создаёт юзера. */
+function consumeFree(userId, n) {
+  const id = Number(userId);
+  const take = Math.min(getFree(id), Math.max(0, Math.floor(Number(n) || 0)));
+  if (take > 0) {
+    stmt('UPDATE users SET free_regions = free_regions - ? WHERE id=?').run(take, id);
+  }
+  return take;
+}
+
+/** Юзеры с непустым пулом бесплатных регионов, по убыванию. */
+function usersWithFree() {
+  return stmt(
+    `SELECT id, username, first_name, free_regions FROM users
+      WHERE free_regions > 0 ORDER BY free_regions DESC, id ASC`
+  ).all();
+}
+
+/** Поиск юзера по @username (регистронезависимо, ведущий '@' игнорируется). */
+function findUserByUsername(name) {
+  let s = String(name == null ? '' : name).trim();
+  if (s.startsWith('@')) s = s.slice(1);
+  if (!s) return null;
+  return (
+    stmt(
+      `SELECT * FROM users WHERE username IS NOT NULL AND lower(username)=lower(?)
+        ORDER BY last_seen DESC LIMIT 1`
+    ).get(s) || null
+  );
+}
+
+/**
+ * Единый расчёт цены заказа со скидкой — зовут и бот, и сервер (SPEC-FREE §3).
+ * quoteOrder(userId, regionsCount) -> {price, freeAvail, freeUsed, payableCount, stars, fullyFree}
+ */
+function quoteOrder(userId, regionsCount) {
+  const price = priceStars();
+  const count = Math.max(0, Math.floor(Number(regionsCount) || 0));
+  const freeAvail = getFree(userId);
+  const freeUsed = Math.min(freeAvail, count);
+  const payableCount = count - freeUsed;
+  const stars = price * payableCount;
+  return {
+    price,
+    freeAvail,
+    freeUsed,
+    payableCount,
+    stars,
+    fullyFree: stars === 0 && count > 0,
+  };
 }
 
 /* ───────────────────── settings ───────────────────── */
@@ -218,8 +320,9 @@ function fallbackForRegions(isos) {
 /* ───────────────────── orders ───────────────────── */
 
 /**
- * createOrder({userId, regions, stars, status='pending', days}) -> {id, token}
+ * createOrder({userId, regions, stars, status='pending', days, freeApplied, chargeId}) -> {id, token}
  * Для status 'paid'/'gift' сразу проставляются paid_at и expires_at (now + days*86400).
+ * freeApplied (int, default 0) → orders.free_applied; chargeId (напр. 'FREE') → orders.charge_id.
  */
 function createOrder(opts) {
   const o = opts || {};
@@ -229,19 +332,23 @@ function createOrder(opts) {
   const token = util.genToken();
   const paidNow = status === 'paid' || status === 'gift';
   const regionsJson = typeof o.regions === 'string' ? o.regions : JSON.stringify(o.regions || []);
+  const freeApplied = Math.max(0, Math.floor(Number(o.freeApplied) || 0));
+  const chargeId = o.chargeId == null ? null : String(o.chargeId);
 
   const info = stmt(
-    `INSERT INTO orders(user_id, regions, stars, status, token, charge_id, created_at, paid_at, expires_at)
-     VALUES(?,?,?,?,?,NULL,?,?,?)`
+    `INSERT INTO orders(user_id, regions, stars, status, token, charge_id, created_at, paid_at, expires_at, free_applied)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`
   ).run(
     Number(o.userId) || 0,
     regionsJson,
     Number(o.stars) || 0,
     status,
     token,
+    chargeId,
     t,
     paidNow ? t : null,
-    paidNow ? t + days * 86400 : null
+    paidNow ? t + days * 86400 : null,
+    freeApplied
   );
   return { id: Number(info.lastInsertRowid), token };
 }
@@ -323,6 +430,13 @@ module.exports = {
   upsertUser,
   getUser,
   allUserIds,
+  getFree,
+  setFree,
+  addFree,
+  consumeFree,
+  usersWithFree,
+  findUserByUsername,
+  quoteOrder,
   getSetting,
   setSetting,
   priceStars,

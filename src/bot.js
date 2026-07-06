@@ -266,9 +266,16 @@ function shopView(userId) {
   if (regions.length % 2 === 1) kb.row();
 
   const n = sel.size;
-  kb.text(`▸ Выбрано: ${n} · Итого: ${n}×${price} ⭐`, 'noop').row();
+  const q = db.quoteOrder(userId, n);
+  if (q.freeAvail > 0) {
+    kb.text(`🎁 Бесплатных регионов: ${q.freeAvail}`, 'noop').row();
+  }
+  let totalLabel = `▸ Выбрано: ${n} · Итого: ${q.stars} ⭐`;
+  if (q.freeUsed > 0) totalLabel += ` (−${q.freeUsed} бесплатно)`;
+  kb.text(totalLabel, 'noop').row();
   kb.text('✦ Выбрать всё', 'all').text('✕ Сброс', 'clr').row();
-  kb.text(`⭐ ОПЛАТИТЬ ${n * price}`, 'pay');
+  if (q.fullyFree) kb.text('🎁 ПОЛУЧИТЬ БЕСПЛАТНО', 'pay');
+  else kb.text(`⭐ ОПЛАТИТЬ ${q.stars}`, 'pay');
 
   const text = [
     BRAND,
@@ -279,6 +286,9 @@ function shopView(userId) {
     'соберутся в одну живую ссылку-подписку.',
     '',
     `Цена: ${price} ⭐ / регион · Срок: ${daysWord(db.subDays())}`,
+    ...(q.freeAvail > 0
+      ? ['', `🎁 У тебя ${regionsWord(q.freeAvail)} бесплатно — спишутся при оформлении.`]
+      : []),
   ].join('\n');
   return { text, kb };
 }
@@ -425,7 +435,36 @@ function adminPanelView(extraLine) {
     .text('📣 Рассылка', 'adm:bcast')
     .text('📦 Последние заказы', 'adm:orders')
     .row()
-    .text('🎁 Выдать ключ', 'adm:gift');
+    .text('🎁 Выдать ключ', 'adm:gift')
+    .text('🎁 Бесплатные', 'adm:free');
+  return { text: lines.join('\n'), kb };
+}
+
+/** Карточка «Бесплатные регионы»: список пулов + формат команды (ЧБ). */
+function freeListView() {
+  let rows = [];
+  try {
+    rows = db.usersWithFree();
+  } catch (e) {
+    console.error('[bot] usersWithFree:', errText(e));
+  }
+  const lines = [`${BRAND} · БЕСПЛАТНЫЕ`, LINE, 'Раздача бесплатных регионов юзерам.', ''];
+  if (rows.length) {
+    lines.push('С активным пулом:');
+    for (const u of rows) {
+      const who = u.username ? '@' + esc(u.username) : esc(u.first_name || '—');
+      lines.push(`• ${who} (<code>${u.id}</code>) — ${regionsWord(u.free_regions)}`);
+    }
+  } else {
+    lines.push('Пока ни у кого нет бесплатных регионов.');
+  }
+  lines.push(
+    THIN,
+    'Формат: <code>/free &lt;кол-во&gt; &lt;user_id|@username&gt;</code>',
+    'Примеры: <code>/free 1 @user</code> · <code>/free 2 927937870</code>',
+    '0 = снять скидку. Кол-во 0…100.'
+  );
+  const kb = new InlineKeyboard().text('🔄 Обновить', 'adm:free');
   return { text: lines.join('\n'), kb };
 }
 
@@ -766,6 +805,7 @@ function registerCommandMenu(api) {
   api.setMyCommands(publicCmds).catch(() => {});
   const adminCmds = publicCmds.concat([
     { command: 'admin', description: '⬛ Админ-панель' },
+    { command: 'free', description: '🎁 Бесплатные регионы: /free <N> <user>' },
     { command: 'refund', description: '↩ Возврат: /refund <order_id>' },
   ]);
   for (const id of config.ADMIN_IDS) {
@@ -850,6 +890,114 @@ function createBot() {
     if (!ctx.from || !isAdmin(ctx.from.id)) return; // тихий игнор
     const v = adminPanelView();
     await ctx.reply(v.text, msgOpts(v.kb));
+  });
+
+  /* /free — раздача бесплатных регионов (только ADMIN_IDS, §4). */
+  bot.command('free', async (ctx) => {
+    if (!ctx.from || !isAdmin(ctx.from.id)) return; // тихий игнор, как /admin
+    const arg = String(ctx.match || '').trim();
+
+    // без аргументов — карточка со списком и форматом
+    if (!arg) {
+      const v = freeListView();
+      await ctx.reply(v.text, msgOpts(v.kb));
+      return;
+    }
+
+    // гибкий разбор: токен с '@' или ≥6 цифр = юзер; короткое число = кол-во
+    const parts = arg.split(/\s+/).filter(Boolean);
+    let userTok = null;
+    let countTok = null;
+    for (const p of parts) {
+      if (userTok === null && (p.startsWith('@') || /^\d{6,}$/.test(p))) userTok = p;
+      else if (countTok === null && /^\d{1,5}$/.test(p)) countTok = p;
+    }
+
+    if (userTok === null) {
+      await ctx.reply(
+        '✕ Укажи получателя: <code>@username</code> или числовой <code>user_id</code>.\nФормат: <code>/free &lt;кол-во&gt; &lt;user&gt;</code>',
+        msgOpts()
+      );
+      return;
+    }
+    if (countTok === null) {
+      await ctx.reply(
+        '✕ Укажи количество (0…100).\nФормат: <code>/free &lt;кол-во&gt; &lt;user&gt;</code>',
+        msgOpts()
+      );
+      return;
+    }
+    const n = parseInt(countTok, 10);
+    if (!Number.isInteger(n) || n < 0 || n > 100) {
+      await ctx.reply('✕ Количество — целое число от 0 до 100. Заново: /free', msgOpts());
+      return;
+    }
+
+    // резолв получателя
+    let targetId;
+    let targetUser = null;
+    if (userTok.startsWith('@')) {
+      targetUser = db.findUserByUsername(userTok);
+      if (!targetUser) {
+        await ctx.reply(
+          `✕ Юзер ${esc(userTok)} не найден в базе. Пусть напишет боту /start, либо укажи числовой id.`,
+          msgOpts()
+        );
+        return;
+      }
+      targetId = targetUser.id;
+    } else {
+      targetId = parseInt(userTok, 10);
+      try {
+        targetUser = db.getUser(targetId);
+      } catch (e) {
+        /* нет строки — setFree её создаст */
+      }
+    }
+
+    let before = 0;
+    let after = n;
+    try {
+      before = db.getFree(targetId);
+      after = db.setFree(targetId, n);
+    } catch (e) {
+      await ctx.reply(`✕ Не смог записать: ${esc(errText(e))}`, msgOpts());
+      return;
+    }
+
+    const who =
+      targetUser && targetUser.username
+        ? '@' + esc(targetUser.username)
+        : userTok.startsWith('@')
+          ? esc(userTok)
+          : `<code>${targetId}</code>`;
+    await ctx.reply(
+      `🎁 ${who} (<code>${targetId}</code>): было ${before} → стало ${after} ${plural(after, 'бесплатный регион', 'бесплатных региона', 'бесплатных регионов')}`,
+      msgOpts()
+    );
+
+    // уведомление юзера (только если пул положительный) — молча глотаем сбой
+    if (after > 0) {
+      try {
+        await ctx.api.sendMessage(
+          targetId,
+          [
+            `🎁 Тебе начислено ${regionsWord(after)} бесплатно!`,
+            'Открой /vpn или магазин, выбери регионы',
+            'и оформи — скидка спишется автоматически.',
+          ].join('\n'),
+          msgOpts()
+        );
+      } catch (e) {
+        /* юзер мог не открывать бота */
+      }
+    }
+
+    try {
+      db.logEvent('free_grant', { admin: ctx.from.id, user: targetId, n });
+    } catch (e) {
+      /* журнал не критичен */
+    }
   });
 
   bot.command('refund', async (ctx) => {
@@ -961,6 +1109,15 @@ function createBot() {
     // (после краша до ack) — без дублей продаж в журнале и спама админам.
     await sendDelivery(ctx.api, ctx.chat.id, order);
     if (wasPending) {
+      // списываем бесплатные регионы по факту выдачи; строго на переходе
+      // pending→paid (идемпотентно к дубль-апдейту Telegram, как notify/log ниже)
+      if (order && Number(order.free_applied) > 0) {
+        try {
+          db.consumeFree(order.user_id, Number(order.free_applied));
+        } catch (e) {
+          console.error('[bot] consumeFree on pay:', errText(e));
+        }
+      }
       try {
         db.logEvent('sale', { orderId: id, userId: ctx.from.id, stars: sp.total_amount });
       } catch (e) { /* ок */ }
@@ -1064,22 +1221,70 @@ function createBot() {
     }
     await ctx.answerCallbackQuery().catch(() => {});
 
-    const price = db.priceStars();
     const days = db.subDays();
-    const total = price * chosen.length;
-    const created = db.createOrder({ userId: uid, regions: chosen, stars: total, status: 'pending' });
+    const q = db.quoteOrder(uid, chosen.length);
+
+    // полностью бесплатный заказ: выдаём сразу, БЕЗ инвойса (XTR на 0 нельзя)
+    if (q.fullyFree) {
+      const created = db.createOrder({
+        userId: uid,
+        regions: chosen,
+        stars: 0,
+        status: 'paid',
+        days,
+        freeApplied: q.freeUsed,
+        chargeId: 'FREE',
+      });
+      let consumed = 0;
+      try {
+        consumed = db.consumeFree(uid, q.freeUsed);
+      } catch (e) {
+        console.error('[bot] consumeFree:', errText(e));
+      }
+      selections.delete(uid); // корзина сыграла
+      const order = db.getOrder(created.id);
+      try {
+        db.logEvent('free_order', {
+          orderId: created.id,
+          userId: uid,
+          regions: chosen,
+          freeApplied: consumed || q.freeUsed,
+        });
+      } catch (e) { /* ок */ }
+      try {
+        await sendDelivery(ctx.api, ctx.chat.id, order);
+      } catch (e) {
+        console.error('[bot] free sendDelivery:', errText(e));
+      }
+      await notifyAdmins(
+        ctx.api,
+        `🎁 Бесплатная выдача #${created.id} · ${userLabel(ctx.from)} · ${regionsWord(chosen.length)}`
+      );
+      return;
+    }
+
+    // обычная (в т.ч. частичная) оплата: инвойс только на платную часть
+    const created = db.createOrder({
+      userId: uid,
+      regions: chosen,
+      stars: q.stars,
+      status: 'pending',
+      days,
+      freeApplied: q.freeUsed,
+    });
     const meta = regionMetaMap();
     const flags = chosen.map((iso) => {
       const r = meta.get(iso);
       return (r && r.flag) || isoToFlag(iso) || iso;
     }).join(' ');
-    const description = cut(`Регионы: ${flags} · ${daysWord(days)}`, 250);
+    let descr = `Регионы: ${flags} · ${daysWord(days)}`;
+    if (q.freeUsed > 0) descr += ` · −${q.freeUsed} бесплатно`;
     await sendStarsInvoice(
       ctx,
-      description,
+      cut(descr, 250),
       `order:${created.id}`,
-      `VLESS · ${regionsWord(chosen.length)}`,
-      total
+      `VLESS · ${regionsWord(q.payableCount)}`,
+      q.stars
     );
   });
 
@@ -1191,6 +1396,12 @@ function createBot() {
       text = `✕ Не смог прочитать заказы: ${esc(errText(e))}`;
     }
     await ctx.reply(text, msgOpts());
+  }));
+
+  bot.callbackQuery('adm:free', guardAdmin(async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const v = freeListView();
+    await ctx.reply(v.text, msgOpts(v.kb));
   }));
 
   bot.callbackQuery('adm:bc_go', guardAdmin(async (ctx) => {

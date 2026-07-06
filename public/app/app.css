@@ -204,6 +204,19 @@ body.theming, body.theming * {
 .fv { color: var(--text); }
 .lead { flex: 1; border-bottom: 1px dotted var(--border); transform: translateY(-3px); }
 
+/* SPEC-FREE: бейдж «🎁 N бесплатных регионов» — пилюля-«купон» с dashed-акцентом.
+   Работает в обеих темах (accent: bw=#fff, dracula=#BD93F9) и со стеклом. */
+.freebadge {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  margin: 10px 0 0;
+  background-color: var(--card); border: 1px dashed var(--accent); border-radius: 999px;
+  color: var(--text); font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+  padding: 11px 16px; text-align: center;
+  animation: fadeUp .34s var(--ease) backwards;
+}
+/* при стекле сохраняем фирменную dashed-обводку акцентом (глушим glass-line) */
+:root[data-glass="1"] .freebadge.gl { border-color: var(--accent); border-style: dashed; }
+
 /* ── заголовки секций ── */
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 18px 10px; }
 .section-head.tall { padding-top: 22px; }

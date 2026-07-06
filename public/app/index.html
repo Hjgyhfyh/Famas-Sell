@@ -55,6 +55,8 @@
         <div class="frow mono"><span class="fk">СРОК КЛЮЧА</span><span class="lead"></span><span class="fv" id="factDays">—</span></div>
         <div class="frow mono"><span class="fk">ВЫДАЧА</span><span class="lead"></span><span class="fv">МГНОВЕННО</span></div>
       </div>
+      <!-- SPEC-FREE: бейдж баланса бесплатных регионов (виден при free>0) -->
+      <div class="freebadge gl mono" id="freeBadge" hidden></div>
     </header>
 
     <div class="section-head">
@@ -200,8 +202,8 @@
       <circle class="ck-ring" cx="36" cy="36" r="33"></circle>
       <path class="ck-path" d="M22 37.5 32 47.5 51 26.5"></path>
     </svg>
-    <h2 class="serif ovl-title">ОПЛАЧЕНО</h2>
-    <p class="mono tiny ovl-sub">ключ уже в чате с ботом</p>
+    <h2 class="serif ovl-title" id="ovlTitle">ОПЛАЧЕНО</h2>
+    <p class="mono tiny ovl-sub" id="ovlSub">ключ уже в чате с ботом</p>
     <button type="button" class="btn accent big wfull" id="btnOpenKey">ОТКРЫТЬ СТРАНИЦУ КЛЮЧА</button>
     <button type="button" class="btn secondary big wfull" id="btnMyKeys">В МОИ КЛЮЧИ</button>
     <button type="button" class="btn ghost big wfull" id="btnCloseApp">ЗАКРЫТЬ</button>

@@ -34,6 +34,7 @@
     query: '',
     staggered: false,   // stagger-анимация только при первом рендере
     orders: null,
+    free: 0,            // SPEC-FREE: баланс бесплатных регионов (поле free из /api/me)
     tab: 'shop',
     payBusy: false,
     successPage: '',
@@ -54,6 +55,8 @@
   var elPayLine = $('payLine');
   var elPaySum = $('paySum');
   var elPayBtn = $('payBtn');
+  var elPayLabel = elPayBtn.querySelector('.pb-label');
+  var elFreeBadge = $('freeBadge');
   var elKeys = $('keysList');
   var elToast = $('toast');
   var elErrbar = $('errbar');
@@ -487,6 +490,27 @@
       });
   }
 
+  /* ── бесплатные регионы (SPEC-FREE) ──────────────────────────── */
+  /* free — только для отображения и предрасчёта в UI: итоговую цену
+     ВСЕГДА считает сервер (db.quoteOrder), локальному числу не доверяем. */
+  function setFreeBalance(n) {
+    n = Math.max(0, Math.floor(Number(n) || 0));
+    if (n === S.free) { renderFree(); return; }
+    S.free = n;
+    renderFree();
+    updatePaybar(false);
+  }
+  function renderFree() {
+    if (!elFreeBadge) return;
+    if (S.free > 0) {
+      elFreeBadge.textContent = '🎁 ' + S.free + ' ' +
+        plural(S.free, 'бесплатный регион', 'бесплатных региона', 'бесплатных регионов');
+      elFreeBadge.hidden = false;
+    } else {
+      elFreeBadge.hidden = true;
+    }
+  }
+
   /* ── выбор и панель оплаты ───────────────────────────────────── */
   function toggleRegion(iso) {
     if (S.sel[iso]) delete S.sel[iso];
@@ -546,10 +570,20 @@
 
   function updatePaybar(instant) {
     var n = S.selCount;
-    var total = n * S.price;
-    elPayLine.textContent = 'ВЫБРАНО ' + n + ' · ИТОГО ' + n + '×' + S.price + ' ⭐';
+    /* SPEC-FREE: первые min(free, выбрано) регионов бесплатны (предрасчёт UI,
+       истина — quoteOrder на сервере) */
+    var freeUsed = Math.min(S.free, n);
+    var payable = Math.max(0, n - S.free);
+    var total = payable * S.price;
+    var line = 'ВЫБРАНО ' + n;
+    if (freeUsed > 0) line += ' · ' + freeUsed + ' БЕСПЛАТНО';
+    line += ' · ИТОГО ' + payable + '×' + S.price + ' ⭐';
+    elPayLine.textContent = line;
     if (instant) { S.prevSum = total; elPaySum.textContent = fmtNum(total) + ' ⭐'; }
     else animateSum(total);
+    elPayLabel.textContent = (n > 0 && total === 0)
+      ? '🎁 ПОЛУЧИТЬ БЕСПЛАТНО'
+      : 'ОПЛАТИТЬ ' + fmtNum(total) + ' ⭐';
     elPayBtn.disabled = n === 0 || S.payBusy;
     var show = n > 0 && S.tab === 'shop';
     elPaybar.classList.toggle('show', show);
@@ -585,12 +619,22 @@
       .then(function (r) {
         if (t) clearTimeout(t);
         return r.json().catch(function () { return {}; }).then(function (d) {
-          if (!r.ok || !d.ok || !d.invoiceLink) throw new Error((d && d.error) || ('HTTP ' + r.status));
+          /* валидны два ответа: {invoiceLink,...} либо {free:true,...} (SPEC-FREE) */
+          if (!r.ok || !d.ok || (!d.invoiceLink && d.free !== true)) throw new Error((d && d.error) || ('HTTP ' + r.status));
           return d;
         });
       })
       .then(function (d) {
         setPayBusy(false);
+        if (d.free === true) {
+          /* SPEC-FREE: заказ полностью бесплатный — сервер уже выдал ключ,
+             счёт не создаётся (инвойс XTR на 0 невозможен), openInvoice не зовём */
+          hapticNotify('success');
+          clearSel();
+          S.orders = null;
+          showSuccess({ free: true, page: d.page || '' });
+          return;
+        }
         if (typeof tg.openInvoice === 'function') {
           tg.openInvoice(d.invoiceLink, function (status) {
             if (status === 'paid') {
@@ -624,20 +668,39 @@
     return fetchJson(API + '/me?initData=' + encodeURIComponent(initData))
       .then(function (d) {
         if (!d.ok) throw new Error('bad payload');
+        if (typeof d.free !== 'undefined') setFreeBalance(d.free); /* SPEC-FREE: свежий баланс */
         return d.orders || [];
       });
   }
 
-  function showSuccess() {
-    S.successPage = '';
+  /* opts.free=true — бесплатная выдача (SPEC-FREE): страница ключа уже
+     известна из ответа /api/order, опрос не нужен; баланс перезапрашиваем. */
+  function showSuccess(opts) {
+    opts = opts || {};
+    var isFree = !!opts.free;
+    S.successPage = typeof opts.page === 'string' ? opts.page : '';
     S.ovlOpen = true;
-    var btn = $('btnOpenKey');
-    btn.disabled = true;
-    btn.textContent = 'ПОЛУЧАЕМ ССЫЛКУ…';
+    var title = $('ovlTitle');
+    var sub = $('ovlSub');
+    if (title) title.textContent = isFree ? 'ПОЛУЧЕНО' : 'ОПЛАЧЕНО';
+    if (sub) sub.textContent = isFree ? 'бесплатная выдача — ключ уже активен' : 'ключ уже в чате с ботом';
+    try { elOvl.setAttribute('aria-label', isFree ? 'Ключ получен' : 'Оплата прошла'); } catch (e) { /* noop */ }
+    if (S.successPage) {
+      readySuccessBtn();
+    } else {
+      var btn = $('btnOpenKey');
+      btn.disabled = true;
+      btn.textContent = 'ПОЛУЧАЕМ ССЫЛКУ…';
+    }
     elOvl.hidden = false;
     requestAnimationFrame(function () { elOvl.classList.add('in'); });
     updateBackBtn();
-    pollSuccessPage(0);
+    if (S.successPage) {
+      /* ссылка уже есть — /api/me дёргаем только ради обновления free-баланса и списка */
+      fetchMe().then(function (orders) { S.orders = orders; }).catch(function () { /* noop */ });
+    } else {
+      pollSuccessPage(0);
+    }
   }
   function hideSuccess() {
     S.ovlOpen = false;
@@ -900,6 +963,10 @@
     for (var i = 0; i < openPanels.length; i++) openPanels[i].style.maxHeight = 'none';
     loadRegions(false);
     updatePaybar(true);
+    /* SPEC-FREE: при старте берём free-баланс из /api/me (бейдж + пересчёт панели) */
+    if (initData) {
+      fetchMe().then(function (orders) { S.orders = orders; }).catch(function () { /* noop: бейдж не критичен */ });
+    }
     /* живая строка доверия: тихий рефреш раз в 2 минуты + при возврате в апп */
     setInterval(function () {
       if (document.visibilityState === 'visible') loadRegions(true);
