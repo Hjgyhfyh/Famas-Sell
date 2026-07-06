@@ -1,0 +1,1588 @@
+<!doctype html>
+<html lang="ru" data-theme="bw">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="format-detection" content="telephone=no">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000" id="metaTheme">
+<title>FAMAS STORE ⁂ — журнал действий</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23000'/%3E%3Ctext x='32' y='45' font-family='Georgia,serif' font-size='34' fill='%23fff' text-anchor='middle'%3E%E2%81%82%3C/text%3E%3C/svg%3E">
+<script>
+/* тема и стекло — ДО первого рендера, чтобы не было вспышки (как в админке) */
+(function () {
+  try {
+    var t = localStorage.getItem('famas_theme');
+    if (t === 'dracula' || t === 'bw') document.documentElement.setAttribute('data-theme', t);
+    if (localStorage.getItem('famas_glass') === '1') document.documentElement.setAttribute('data-glass', '1');
+  } catch (e) { /* приватный режим — молча */ }
+})();
+</script>
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   FAMAS STORE ⁂ — журнал действий (SPEC-V3 §A5) · самодостаточная страница
+   дизайн-система v2 «FAMAS ROUNDED» 1-в-1 с админкой: темы bw / dracula,
+   жидкое стекло, всё скруглённое, без внешних шрифтов и CDN
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── токены темы: bw (фирменный чёрно-белый) ── */
+:root {
+  --bg: #000;
+  --bg2: #0a0a0a;
+  --card: #111214;
+  --card2: #1a1b1e;
+  --border: #26272b;
+  --text: #fff;
+  --muted: #8a8a8a;
+  --accent: #fff;
+  --accent2: #fff;
+  --accent-contrast: #000;
+  --good: #fff;
+  --info: #fff;
+  --dim: #666;
+  --pay-bg: #fff;
+  --pay-text: #000;
+  --glass-bg: rgba(20, 20, 22, .55);
+  --glass-fb: rgba(12, 12, 14, .92);
+  --glass-line: rgba(255, 255, 255, .12);
+  --glass-top: rgba(255, 255, 255, .16);
+  --blob1: rgba(255, 255, 255, .07);
+  --blob2: rgba(255, 255, 255, .05);
+  --blob3: rgba(153, 153, 153, .06);
+
+  --r-sm: 10px;
+  --r-md: 16px;
+  --r-lg: 22px;
+  --r-xl: 28px;
+
+  --serif: Georgia, 'Times New Roman', serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  --safe: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+
+  --ease: cubic-bezier(.22, 1, .36, 1);
+  --spring: cubic-bezier(.34, 1.56, .64, 1);
+  --shadow-card: 0 14px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-float: 0 18px 40px -24px rgba(0, 0, 0, .8);
+  --pay-shadow: 0 10px 26px -14px rgba(0, 0, 0, .7);
+}
+
+/* ── тема dracula ── */
+:root[data-theme="dracula"] {
+  --bg: #191A21;
+  --bg2: #21222C;
+  --card: #282A36;
+  --card2: #353849;
+  --border: #44475A;
+  --text: #F8F8F2;
+  --muted: #6272A4;
+  --accent: #BD93F9;
+  --accent2: #FF79C6;
+  --accent-contrast: #191A21;
+  --good: #50FA7B;
+  --info: #8BE9FD;
+  --dim: #6272A4;
+  --pay-bg: linear-gradient(135deg, #BD93F9, #FF79C6);
+  --pay-text: #191A21;
+  --glass-bg: rgba(40, 42, 54, .55);
+  --glass-fb: rgba(33, 34, 44, .92);
+  --glass-line: rgba(255, 255, 255, .12);
+  --glass-top: rgba(255, 255, 255, .16);
+  --blob1: rgba(189, 147, 249, .14);
+  --blob2: rgba(255, 121, 198, .12);
+  --blob3: rgba(139, 233, 253, .10);
+  --pay-shadow: 0 10px 26px -12px rgba(189, 147, 249, .45);
+}
+
+/* ── база ── */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; background: var(--bg); overscroll-behavior: none; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--sans);
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding-bottom: calc(var(--safe) + 44px);
+  overscroll-behavior-y: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+}
+[hidden] { display: none !important; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; touch-action: manipulation; user-select: none; -webkit-user-select: none; background: none; border: 0; }
+img { display: block; }
+::selection { background: var(--text); color: var(--bg); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* кроссфейд смены темы (~250ms) */
+body.theming, body.theming * {
+  transition: background-color .25s ease, color .25s ease, border-color .25s ease,
+              opacity .25s ease, box-shadow .25s ease, fill .25s ease, stroke .25s ease !important;
+}
+
+/* ── утилиты ── */
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.serif { font-family: var(--serif); }
+.tiny { font-size: 10px; letter-spacing: .12em; }
+.caps { text-transform: uppercase; letter-spacing: .12em; }
+.dim { color: var(--dim); }
+
+/* ── блобы жидкого стекла (видны при data-glass="1") ── */
+.blobs { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; display: none; }
+:root[data-glass="1"] .blobs { display: block; }
+.bl { position: absolute; border-radius: 50%; filter: blur(90px); will-change: transform; }
+.b1 { width: 58vw; height: 58vw; left: -14vw; top: -8vh; background: var(--blob1); animation: drift1 52s ease-in-out infinite alternate; }
+.b2 { width: 50vw; height: 50vw; right: -12vw; top: 32vh; background: var(--blob2); animation: drift2 64s ease-in-out infinite alternate; }
+.b3 { width: 46vw; height: 46vw; left: 18vw; bottom: -14vh; background: var(--blob3); animation: drift3 70s ease-in-out infinite alternate; }
+@keyframes drift1 { to { transform: translate(22vw, 16vh) scale(1.18); } }
+@keyframes drift2 { to { transform: translate(-16vw, -14vh) scale(.86); } }
+@keyframes drift3 { to { transform: translate(10vw, -18vh) scale(1.12); } }
+
+/* ── шум-плёнка ── */
+.noise {
+  position: fixed; inset: 0; z-index: 900; pointer-events: none; opacity: .04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+}
+
+/* ── жидкое стекло: карточки/панели ── */
+:root[data-glass="1"] .gl {
+  background-color: var(--glass-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  border-color: var(--glass-line);
+  box-shadow: inset 0 1px 0 var(--glass-top);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-glass="1"] .gl { background-color: var(--glass-fb); }
+}
+
+/* ── каркас ── */
+.wrap { position: relative; z-index: 1; max-width: 640px; margin: 0 auto; }
+
+/* ── плашка ошибок сети ── */
+.errbar {
+  position: fixed; top: calc(10px + var(--safe-top)); left: 12px; right: 12px; z-index: 950;
+  background: var(--card2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 999px;
+  box-shadow: 0 12px 28px -16px rgba(0, 0, 0, .7);
+  font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  padding: 12px 18px; text-align: center;
+  transform: translateY(-72px); opacity: 0; transition: transform .3s var(--ease), opacity .25s ease;
+  pointer-events: none; will-change: transform;
+}
+.errbar.show { transform: none; opacity: 1; }
+
+/* ── мастхед ── */
+.masthead { padding: calc(14px + var(--safe-top)) 18px 0; animation: paneIn .4s var(--ease) backwards; }
+@keyframes paneIn { from { opacity: 0; transform: translateY(10px); } }
+.mast-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px 0; }
+.mast-actions { display: flex; gap: 8px; }
+.backlink {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  color: var(--dim); text-decoration: none; padding: 6px 2px;
+  transition: color .15s ease;
+}
+.backlink::before { content: ''; position: absolute; inset: -10px -8px; } /* тап ≥44px */
+.backlink:active { color: var(--text); }
+.iconbtn {
+  position: relative;
+  width: 38px; height: 38px; border-radius: 50%;
+  background: var(--card); border: 1px solid var(--border);
+  color: var(--muted); font-size: 16px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: transform .15s ease, color .15s ease, border-color .15s ease;
+}
+.iconbtn::before { content: ''; position: absolute; inset: -4px; border-radius: 50%; } /* тап ≥44px */
+.iconbtn:active { transform: scale(.92); color: var(--text); }
+.iconbtn svg { width: 17px; height: 17px; }
+.iconbtn.spin svg { animation: spin .55s var(--ease); }
+
+.brand { text-align: center; padding: 18px 0 12px; }
+.brand-mark { font-size: 22px; color: var(--accent); margin-bottom: 8px; }
+.brand-name { font-size: 30px; font-weight: 400; letter-spacing: .06em; }
+/* «ЖУРНАЛ ДЕЙСТВИЙ» — служебная лента между волосяными линиями */
+.brand-sub {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  color: var(--accent); font-size: 10px; letter-spacing: .34em; text-indent: .34em;
+  margin-top: 9px;
+}
+.brand-sub::before, .brand-sub::after { content: ''; width: 36px; border-top: 1px solid var(--border); }
+
+.trust {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  color: var(--muted); text-transform: uppercase; padding: 2px 0 12px;
+  min-height: 40px;
+}
+.dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--good); flex: none;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+/* ── заголовки секций ── */
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 18px 18px 10px; }
+.sec { font-size: 10px; font-weight: 400; color: var(--muted); }
+.sec b { color: var(--text); font-weight: 400; }
+.sec-n { color: var(--dim); }
+.sec-hint { font-size: 9px; letter-spacing: .18em; }
+
+/* ── плитки активности (5 шт: 2+2+широкая; ≥560px — 3+2) ── */
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 18px; }
+.tile {
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 10px;
+  background-color: var(--card); border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 13px 15px 12px; min-height: 88px;
+  animation: fadeUp .34s var(--ease) backwards;
+}
+.tile.t2 { animation-delay: .05s; }
+.tile.t3 { animation-delay: .1s; }
+.tile.t4 { animation-delay: .15s; }
+.tile.t5 { animation-delay: .2s; grid-column: span 2; }
+@media (min-width: 560px) {
+  .tiles { grid-template-columns: repeat(6, 1fr); }
+  .tile { grid-column: span 2; }
+  .tile.t4, .tile.t5 { grid-column: span 3; }
+}
+/* водяной знак-орнамент в углу плитки */
+.tile::after {
+  content: '⁂'; position: absolute; right: 9px; bottom: -7px;
+  font-family: var(--serif); font-size: 40px; line-height: 1;
+  color: var(--text); opacity: .045; pointer-events: none;
+}
+.tile .tl { color: var(--dim); font-size: 9px; letter-spacing: .16em; }
+.tile .tv {
+  font-size: 25px; line-height: 1.05; font-weight: 700; letter-spacing: .02em;
+  font-variant-numeric: tabular-nums; word-break: break-all;
+}
+.tile.rev .tv { color: var(--accent); }
+.tile.today .tv { color: var(--good); }
+
+/* ── липкий пульт: поиск + «только админы» + чипы действий ── */
+.ctrls {
+  position: sticky; top: calc(8px + var(--safe-top)); z-index: 60;
+  margin: 0 12px 14px;
+  background-color: var(--bg2); border: 1px solid var(--border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-float);
+  padding: 8px;
+}
+.ctrls-in { display: flex; flex-direction: column; gap: 8px; }
+.frow1 { display: flex; align-items: center; gap: 8px; }
+.search { flex: 1; min-width: 0; }
+.search input {
+  width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+  color: var(--text); font-size: 12px; letter-spacing: .06em; padding: 13px 18px;
+  outline: none; appearance: none; -webkit-appearance: none;
+  transition: border-color .18s ease;
+}
+.search input::placeholder { color: var(--dim); }
+.search input:focus { border-color: var(--muted); }
+.search input:focus-visible { outline: none; }
+
+.chiprow {
+  display: flex; gap: 8px;
+  overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  padding: 2px; margin: -2px;
+}
+.chiprow::-webkit-scrollbar { display: none; }
+.sortchip {
+  position: relative; flex: none;
+  background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+  color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 12px 16px; white-space: nowrap;
+  transition: transform .15s ease, color .18s ease, border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+}
+.sortchip::before { content: ''; position: absolute; inset: -4px 0; border-radius: 999px; } /* тап ≥44px */
+.sortchip:active { transform: scale(.95); }
+.sortchip.active { background: var(--pay-bg); border-color: transparent; color: var(--pay-text); box-shadow: var(--pay-shadow); }
+/* чип действия: моно-код как пришёл из журнала, без капса */
+.sortchip.chip-action {
+  text-transform: none; letter-spacing: .03em; font-size: 11px;
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── лента действий ── */
+.feed { padding: 0 18px; }
+.lcard {
+  background-color: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 12px 14px 11px; margin-bottom: 10px;
+  transition: border-color .2s ease;
+}
+.lcard.in { animation: fadeUp .34s var(--ease) backwards; }
+.lcard.is-adm { box-shadow: inset 2px 0 0 var(--accent); }
+:root[data-glass="1"] .lcard.is-adm.gl { box-shadow: inset 2px 0 0 var(--accent), inset 0 1px 0 var(--glass-top); }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+.l-top { display: flex; align-items: center; gap: 10px; }
+
+/* аватар: фото поверх инициал-заглушки; фолбэк — монограмма серифом */
+.ava {
+  position: relative; width: 44px; height: 44px; border-radius: 50%; flex: none;
+  overflow: hidden; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(160deg, var(--card2), var(--bg2));
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07);
+}
+.ava.sm { width: 34px; height: 34px; }
+.ava-fb { font-style: normal; font-size: 19px; line-height: 1; color: var(--text); }
+.ava.sm .ava-fb { font-size: 14px; }
+.ava img {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  opacity: 0; transition: opacity .35s ease;
+}
+.ava img.ld { opacity: 1; }
+/* детерминированный цвет от userId: в ЧБ — строгие серые кольца,
+   в Dracula — акцентные оттенки палитры */
+.ava.c0 { border-color: #3c3d42; }
+.ava.c1 { border-color: #55565c; }
+.ava.c2 { border-color: #6d6e74; }
+.ava.c3 { border-color: #85868c; }
+.ava.c4 { border-color: #45464b; }
+.ava.c5 { border-color: #97989e; }
+.ava.c6 { border-color: #313236; }
+.ava.c7 { border-color: #606166; }
+:root[data-theme="dracula"] .ava.c0 { background: rgba(189, 147, 249, .16); border-color: rgba(189, 147, 249, .45); }
+:root[data-theme="dracula"] .ava.c0 .ava-fb { color: #BD93F9; }
+:root[data-theme="dracula"] .ava.c1 { background: rgba(255, 121, 198, .14); border-color: rgba(255, 121, 198, .45); }
+:root[data-theme="dracula"] .ava.c1 .ava-fb { color: #FF79C6; }
+:root[data-theme="dracula"] .ava.c2 { background: rgba(139, 233, 253, .13); border-color: rgba(139, 233, 253, .45); }
+:root[data-theme="dracula"] .ava.c2 .ava-fb { color: #8BE9FD; }
+:root[data-theme="dracula"] .ava.c3 { background: rgba(80, 250, 123, .12); border-color: rgba(80, 250, 123, .42); }
+:root[data-theme="dracula"] .ava.c3 .ava-fb { color: #50FA7B; }
+:root[data-theme="dracula"] .ava.c4 { background: rgba(255, 184, 108, .14); border-color: rgba(255, 184, 108, .45); }
+:root[data-theme="dracula"] .ava.c4 .ava-fb { color: #FFB86C; }
+:root[data-theme="dracula"] .ava.c5 { background: rgba(241, 250, 140, .12); border-color: rgba(241, 250, 140, .42); }
+:root[data-theme="dracula"] .ava.c5 .ava-fb { color: #F1FA8C; }
+:root[data-theme="dracula"] .ava.c6 { background: rgba(255, 85, 85, .14); border-color: rgba(255, 85, 85, .45); }
+:root[data-theme="dracula"] .ava.c6 .ava-fb { color: #FF5555; }
+:root[data-theme="dracula"] .ava.c7 { background: rgba(98, 114, 164, .18); border-color: rgba(98, 114, 164, .55); }
+:root[data-theme="dracula"] .ava.c7 .ava-fb { color: #8BA0D8; }
+
+/* @ник · id — кнопка «клик = копировать id» */
+.l-user {
+  position: relative; flex: 1; min-width: 0;
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 2px 0; text-align: left; color: var(--text);
+  transition: opacity .15s ease;
+}
+.l-user::before { content: ''; position: absolute; inset: -12px -6px; } /* тап ≥44px */
+.l-user:active { opacity: .65; }
+.lu-name {
+  flex: 0 1 auto; min-width: 0; font-size: 13.5px; font-weight: 700; letter-spacing: .01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lu-name.noun { color: var(--muted); font-weight: 500; font-style: italic; }
+.lu-id { flex: none; font-size: 10px; letter-spacing: .08em; color: var(--dim); }
+.l-user .cp { flex: none; font-size: 11px; color: var(--dim); opacity: .8; }
+.l-time {
+  flex: none; font-size: 9.5px; letter-spacing: .06em; color: var(--dim);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+/* бейджи вида апдейта */
+.badge {
+  flex: none; font-family: var(--mono); font-size: 8.5px; font-weight: 400;
+  letter-spacing: .1em; text-transform: uppercase; white-space: nowrap;
+  padding: 4px 9px; border-radius: 999px;
+  background: var(--bg2); border: 1px solid var(--border); color: var(--muted);
+}
+.badge.k-command { background: var(--card2); color: var(--text); }
+.badge.k-callback { border-style: dashed; color: var(--text); }
+.badge.k-message { color: var(--muted); }
+.badge.adm { border-color: var(--accent); color: var(--accent); background: transparent; }
+
+/* строка с action: бейджи + моно-код (клик = фильтр) */
+.l-mid { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.l-action {
+  position: relative; font-family: var(--mono); font-size: 11.5px; font-weight: 700;
+  letter-spacing: .02em; color: var(--text); text-align: left;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 9px;
+  padding: 5px 9px; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: transform .15s ease, color .15s ease, border-color .15s ease;
+}
+.l-action::before { content: ''; position: absolute; inset: -9px -4px; border-radius: 12px; } /* тап ≥44px */
+.l-action:active { transform: scale(.96); }
+.l-action:disabled { pointer-events: none; }
+
+/* деталь — обрезаем до 3 строк */
+.l-detail {
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
+  color: var(--muted); font-size: 12px; line-height: 1.55; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* ── скелетоны строк журнала ── */
+.skel-row {
+  height: 88px; border-radius: var(--r-lg);
+  border: 1px solid var(--border); background-color: var(--card);
+  position: relative; overflow: hidden; margin-bottom: 10px;
+  background-image:
+    radial-gradient(circle closest-side, var(--card2) 97%, transparent 100%),
+    linear-gradient(var(--card2), var(--card2)),
+    linear-gradient(var(--card2), var(--card2)),
+    linear-gradient(var(--card2), var(--card2));
+  background-repeat: no-repeat;
+  background-size: 34px 34px, 42% 12px, 22% 9px, 58% 16px;
+  background-position: 14px 14px, 58px 25px, calc(100% - 14px) 26px, 14px 58px;
+}
+.skel-row::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, .045) 50%, transparent 80%);
+  transform: translateX(-100%); animation: shimmer 1.2s ease-in-out infinite;
+}
+@keyframes shimmer { to { transform: translateX(100%); } }
+
+/* ── пустое состояние / ошибка ленты ── */
+.feednote { text-align: center; padding: 46px 30px 38px; }
+.fn-mark { font-size: 28px; color: var(--muted); margin-bottom: 12px; }
+.fn-big { font-style: italic; font-size: 20px; }
+.fn-sub { color: var(--dim); line-height: 1.9; margin: 10px 0 18px; }
+.chip {
+  position: relative; display: inline-block;
+  background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+  color: var(--muted); font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+  padding: 12px 20px; white-space: nowrap;
+  transition: transform .15s ease, color .15s ease, border-color .15s ease;
+}
+.chip::before { content: ''; position: absolute; inset: -5px; border-radius: 999px; } /* тап ≥44px */
+.chip:active { transform: scale(.95); color: var(--text); }
+
+/* ── «показать ещё» + конец ленты ── */
+.morewrap { padding: 4px 18px 0; }
+.btn-more {
+  position: relative; width: 100%;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--card);
+  color: var(--muted); font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase; padding: 16px 14px;
+  transition: transform .15s ease, color .15s ease, border-color .15s ease;
+}
+.btn-more:active { transform: scale(.98); }
+.btn-more:disabled { opacity: .6; }
+.btn-more .pb-spin {
+  display: none; position: absolute; left: 50%; top: 50%; width: 16px; height: 16px;
+  margin: -8px 0 0 -8px; border-radius: 50%;
+  border: 2px solid var(--muted); border-top-color: transparent;
+  animation: spin .7s linear infinite;
+}
+.btn-more.busy .bm-label { visibility: hidden; }
+.btn-more.busy .pb-spin { display: block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.feedend { text-align: center; padding: 20px 18px 0; font-size: 9px; letter-spacing: .22em; }
+.sentinel { height: 1px; }
+
+.pagefoot { text-align: center; padding: 34px 0 8px; font-size: 9px; letter-spacing: .22em; }
+
+/* ── экран «⛔ доступ только для администратора» ── */
+.gate {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  padding: 28px; background: var(--bg);
+}
+.gate-card {
+  width: 100%; max-width: 340px; text-align: center;
+  background-color: var(--card); border: 1px solid var(--border); border-radius: var(--r-xl);
+  box-shadow: var(--shadow-card);
+  padding: 36px 26px 26px;
+  animation: gateIn .5s var(--spring) backwards;
+}
+@keyframes gateIn { from { opacity: 0; transform: scale(.92) translateY(10px); } }
+.gate-ring {
+  position: relative; width: 76px; height: 76px; margin: 0 auto 18px;
+  border: 1px solid var(--border); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+}
+.gate-ring::after {
+  content: ''; position: absolute; inset: -7px; border-radius: 50%;
+  border: 1px solid var(--border); opacity: 0;
+  animation: ping 2.4s cubic-bezier(0, 0, .2, 1) infinite;
+}
+@keyframes ping { 0% { transform: scale(.75); opacity: .7; } 70%, 100% { transform: scale(1.12); opacity: 0; } }
+.gate-mark { font-size: 32px; line-height: 1; }
+.gate-title { font-size: 22px; font-weight: 400; letter-spacing: .04em; line-height: 1.35; }
+.gate-sub { color: var(--muted); line-height: 1.9; margin-top: 12px; }
+.gate-foot { margin-top: 24px; padding-top: 16px; border-top: 1px dashed var(--border); font-size: 9px; letter-spacing: .22em; }
+
+/* ── bottom-sheet настроек ── */
+.sheet-back {
+  position: fixed; inset: 0; z-index: 400; background: rgba(0, 0, 0, .55);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  opacity: 0; transition: opacity .3s ease;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .sheet-back { background: rgba(0, 0, 0, .72); }
+}
+.sheet-back.in { opacity: 1; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 410;
+  max-width: 640px; margin: 0 auto;
+  background-color: var(--card); border: 1px solid var(--border); border-bottom: 0;
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  box-shadow: 0 -24px 60px -32px rgba(0, 0, 0, .85);
+  padding: 10px 20px calc(22px + var(--safe));
+  transform: translateY(100%); transition: transform .3s var(--ease);
+  will-change: transform; touch-action: none;
+  user-select: none; -webkit-user-select: none;
+}
+.sheet.in { transform: none; }
+.sheet.drag { transition: none; }
+.sheet-handle { width: 42px; height: 4px; border-radius: 999px; background: var(--border); margin: 4px auto 16px; }
+.sheet-title { font-size: 11px; color: var(--muted); margin-bottom: 18px; }
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 0; }
+.set-label { color: var(--muted); }
+
+/* сегмент-контрол темы */
+.seg { position: relative; display: flex; background: var(--bg2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+.seg-thumb {
+  position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px);
+  background: var(--accent); border-radius: 999px;
+  transition: transform .28s var(--spring); will-change: transform;
+}
+.seg.dr .seg-thumb { transform: translateX(100%); }
+.seg-btn {
+  position: relative; z-index: 1; border: 0; background: none;
+  font-size: 10px; letter-spacing: .1em; padding: 8px 16px; border-radius: 999px;
+  color: var(--muted); transition: color .2s ease; min-width: 74px;
+  font-family: var(--mono); text-transform: uppercase;
+}
+.seg-btn::before { content: ''; position: absolute; inset: -7px 0; } /* тап ≥44px */
+.seg-btn.active { color: var(--accent-contrast); }
+
+/* iOS-переключатель стекла */
+.switch {
+  position: relative; width: 52px; height: 32px; flex: none;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--bg2);
+  transition: background-color .25s ease, border-color .25s ease;
+}
+.switch::before { content: ''; position: absolute; inset: -7px; border-radius: 999px; } /* тап ≥44px */
+.switch .knob {
+  position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--muted);
+  transition: transform .25s var(--spring), background-color .25s ease;
+}
+.switch.on { background: var(--accent); border-color: var(--accent); }
+.switch.on .knob { transform: translateX(20px); background: var(--accent-contrast); }
+
+.set-prev { margin: 16px 0 8px; }
+.lcard.prev { margin: 0; cursor: default; }
+.lcard.prev .l-user, .lcard.prev .l-action { pointer-events: none; }
+
+/* ── тост-пилюля ── */
+.toast {
+  position: fixed; left: 50%; bottom: calc(var(--safe) + 28px); z-index: 500;
+  transform: translateX(-50%) translateY(10px);
+  background: var(--card2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 999px; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  box-shadow: 0 12px 26px -16px rgba(0, 0, 0, .7);
+  padding: 12px 20px; white-space: nowrap;
+  max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis;
+  opacity: 0; transition: opacity .22s ease, transform .26s var(--ease); pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateX(-50%); }
+
+.noscript { position: fixed; inset: auto 12px 12px; z-index: 999; background: var(--card2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 14px; text-align: center; font-size: 11px; }
+
+/* ── hover (устройства с курсором: Telegram Desktop / браузер) ── */
+@media (hover: hover) and (pointer: fine) {
+  .backlink:hover { color: var(--text); }
+  .iconbtn:hover { color: var(--text); border-color: var(--muted); }
+  .sortchip:hover { color: var(--text); border-color: var(--muted); }
+  .sortchip.active:hover { color: var(--pay-text); border-color: transparent; }
+  .sortchip:hover:active { transform: scale(.95); }
+  .search input:hover { border-color: var(--muted); }
+  .lcard:hover { border-color: var(--muted); }
+  .lcard.prev:hover { border-color: var(--border); }
+  .l-user:hover .lu-id, .l-user:hover .cp { color: var(--text); }
+  .l-action:hover { border-color: var(--muted); }
+  .chip:hover { color: var(--text); border-color: var(--muted); transform: translateY(-1px); }
+  .chip:hover:active { transform: scale(.95); }
+  .btn-more:hover { color: var(--text); border-color: var(--muted); }
+  .seg-btn:hover { color: var(--text); }
+  .seg-btn.active:hover { color: var(--accent-contrast); }
+  .tile:hover { border-color: var(--muted); }
+}
+
+/* ── доступность: меньше движения ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: .01s !important;
+    animation-duration: .01s !important;
+    animation-delay: 0s !important;
+  }
+  /* спиннер догрузки — индикатор состояния, оставляем живым */
+  .btn-more .pb-spin { animation-duration: .7s !important; }
+  .bl, .dot, .skel-row::after, .gate-ring::after { animation: none !important; }
+}
+</style>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+
+<!-- блобы жидкого стекла (видны только при data-glass="1") -->
+<div class="blobs" aria-hidden="true"><i class="bl b1"></i><i class="bl b2"></i><i class="bl b3"></i></div>
+<!-- лёгкий шум-плёнка -->
+<div class="noise" aria-hidden="true"></div>
+
+<!-- плашка ошибок сети -->
+<div class="errbar mono" id="errbar" role="alert"><span id="errbarText"></span></div>
+
+<!-- ══════════ экран «доступ только для администратора» ══════════ -->
+<section class="gate" id="gate" hidden>
+  <div class="gate-card gl">
+    <div class="gate-ring" aria-hidden="true"><span class="gate-mark">⛔</span></div>
+    <h2 class="gate-title serif">Доступ только<br>для администратора</h2>
+    <p class="gate-sub mono tiny" id="gateSub">журнал открывается из бота: /admin → «🧾 логи»</p>
+    <p class="gate-foot mono tiny dim caps">⁂ famas store · служебная зона</p>
+  </div>
+</section>
+
+<!-- ══════════ журнал ══════════ -->
+<main class="wrap" id="app">
+
+  <header class="masthead">
+    <div class="mast-row">
+      <a class="backlink mono tiny caps" href="./" aria-label="Назад в админку">← админка</a>
+      <span class="mast-actions">
+        <button type="button" class="iconbtn" id="btnRefresh" aria-label="Обновить данные"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+        <button type="button" class="iconbtn" id="btnSettings" aria-label="Настройки"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8.1M17.6 8H20M4 16h2.4M9.9 16H20"/><circle cx="14.85" cy="8" r="2.35"/><circle cx="7.15" cy="16" r="2.35"/></svg></button>
+      </span>
+    </div>
+    <div class="brand">
+      <div class="brand-mark serif" aria-hidden="true">⁂</div>
+      <h1 class="brand-name serif">FAMAS STORE</h1>
+      <p class="brand-sub mono">журнал действий</p>
+    </div>
+    <div class="trust mono tiny">
+      <span class="dot" aria-hidden="true"></span><span id="trustText">проверка доступа…</span>
+    </div>
+  </header>
+
+  <!-- ── 01 · активность ── -->
+  <div class="section-head">
+    <h2 class="mono caps sec"><b>01 /</b> активность</h2>
+  </div>
+
+  <section class="summary" aria-label="Активность пользователей">
+    <div class="tiles">
+      <div class="tile gl t1"><span class="tl mono caps">👥 всего людей</span><b class="tv mono" id="stUsers" data-v="0">0</b></div>
+      <div class="tile gl t2 today"><span class="tl mono caps">🕐 заходили сегодня</span><b class="tv mono" id="stToday" data-v="0">0</b></div>
+      <div class="tile gl t3"><span class="tl mono caps">📅 за 7 дней</span><b class="tv mono" id="stWeek" data-v="0">0</b></div>
+      <div class="tile gl t4 rev"><span class="tl mono caps">⚡ действий сегодня</span><b class="tv mono" id="stActs" data-v="0">0</b></div>
+      <div class="tile gl t5"><span class="tl mono caps">🛡 админов</span><b class="tv mono" id="stAdmins" data-v="0">0</b></div>
+    </div>
+  </section>
+
+  <!-- ── 02 · журнал ── -->
+  <div class="section-head">
+    <h2 class="mono caps sec"><b>02 /</b> журнал <span class="sec-n" id="feedTotal"></span></h2>
+    <span class="sec-hint mono tiny dim caps">время · мск</span>
+  </div>
+
+  <div class="ctrls gl">
+    <div class="ctrls-in">
+      <div class="frow1">
+        <div class="search">
+          <input type="search" id="searchInput" class="mono" placeholder="поиск: @ник или id…" autocomplete="off" spellcheck="false" aria-label="Поиск по нику или id пользователя" enterkeyhint="search">
+        </div>
+        <button type="button" class="sortchip mono" id="admToggle" role="switch" aria-checked="false">🛡 только админы</button>
+      </div>
+      <div class="chiprow" id="chipRow" role="radiogroup" aria-label="Фильтр по действию"></div>
+    </div>
+  </div>
+
+  <div class="feed" id="feed"></div>
+
+  <div class="feednote" id="feedNote" hidden>
+    <div class="fn-mark serif" aria-hidden="true">⁂</div>
+    <p class="fn-big serif" id="feedNoteTitle"></p>
+    <p class="fn-sub mono tiny" id="feedNoteText"></p>
+    <button type="button" class="chip" id="btnRetry" hidden>⟳ Повторить</button>
+    <button type="button" class="chip" id="btnReset" hidden>✕ Сбросить фильтры</button>
+  </div>
+
+  <div class="morewrap" id="moreWrap" hidden>
+    <button type="button" class="btn-more" id="btnMore">
+      <span class="bm-label">Показать ещё</span>
+      <span class="pb-spin" aria-hidden="true"></span>
+    </button>
+  </div>
+  <p class="feedend mono dim caps" id="feedEnd" hidden></p>
+  <div class="sentinel" id="sentinel" aria-hidden="true"></div>
+
+  <footer class="pagefoot mono tiny dim caps">⁂ famas store · журнал действий · время мск</footer>
+
+</main>
+
+<!-- ── bottom-sheet настроек ── -->
+<div class="sheet-back" id="sheetBack" hidden></div>
+<div class="sheet gl" id="sheet" role="dialog" aria-modal="true" aria-label="Настройки" hidden>
+  <div class="sheet-handle" aria-hidden="true"></div>
+  <div class="sheet-title mono caps">⚙︎ настройки</div>
+
+  <div class="set-row">
+    <span class="set-label mono tiny caps">тема</span>
+    <div class="seg" id="segTheme" role="radiogroup" aria-label="Тема оформления">
+      <span class="seg-thumb" aria-hidden="true"></span>
+      <button type="button" class="seg-btn active" role="radio" aria-checked="true" data-th="bw">ЧБ</button>
+      <button type="button" class="seg-btn" role="radio" aria-checked="false" data-th="dracula">DRACULA</button>
+    </div>
+  </div>
+
+  <div class="set-row">
+    <span class="set-label mono tiny caps">жидкое стекло</span>
+    <button type="button" class="switch" id="swGlass" role="switch" aria-checked="false" aria-label="Жидкое стекло"><span class="knob"></span></button>
+  </div>
+
+  <p class="set-prev mono tiny dim caps">превью</p>
+  <div class="lcard prev gl" aria-hidden="true">
+    <div class="l-top">
+      <span class="ava sm c1"><i class="ava-fb serif">F</i></span>
+      <span class="l-user"><b class="lu-name">@famas</b><span class="lu-id mono">· 927937870</span><span class="cp">⧉</span></span>
+      <span class="l-time mono">06.07 14:23:45</span>
+    </div>
+    <div class="l-mid">
+      <span class="badge k-command">⌘ команда</span>
+      <span class="badge adm">🛡 админ</span>
+      <span class="l-action mono">/start</span>
+    </div>
+  </div>
+</div>
+
+<div class="toast mono" id="toast" role="status" aria-live="polite" hidden></div>
+
+<noscript><div class="noscript mono">включи JavaScript — без него журнал не работает</div></noscript>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   FAMAS STORE ⁂ — журнал действий · ванильный JS, без зависимостей
+   API: /famas/admin/api/log + /activity (SPEC-V3 §A4-A5)
+   доступ: initData + ADMIN_IDS (403 → экран «только для администратора»)
+   Все данные из API вставляются ТОЛЬКО через textContent (XSS-safe).
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+
+  /* ── Telegram WebApp ─────────────────────────────────────────── */
+  var tg = (window.Telegram && window.Telegram.WebApp) || null;
+  if (tg) {
+    try { tg.ready(); } catch (e) { /* noop */ }
+    try { tg.expand(); } catch (e) { /* noop */ }
+    try { if (typeof tg.disableVerticalSwipes === 'function') tg.disableVerticalSwipes(); } catch (e) { /* noop */ }
+  }
+  var initData = (tg && tg.initData) || '';
+  var INIT_Q = encodeURIComponent(initData);
+
+  var API = '/famas/admin/api';
+  var AVA_URL = '/famas/admin/avatar/';
+  var THEME_KEY = 'famas_theme';
+  var GLASS_KEY = 'famas_glass';
+  var THEME_BG = { bw: '#000000', dracula: '#191A21' };
+  var LIMIT = 50;           // страница ленты (SPEC-V3 §A4: limit ≤ 200)
+  var CHIP_MAX = 24;        // максимум чипов-действий в пульте
+  var MSK_MS = 3 * 3600 * 1000; // МСК = UTC+3 круглый год
+
+  /* ── состояние ───────────────────────────────────────────────── */
+  var S = {
+    q: '',                 // поиск по @username/id (дебаунс)
+    action: '',            // фильтр по действию ('' = все)
+    adminOnly: false,      // чекбокс «только админы»
+    offset: 0,
+    total: -1,             // всего подходящих строк (из API)
+    count: 0,              // уже показано строк
+    busy: false,
+    gate: false,           // показан экран «только для администратора»
+    sheetOpen: false
+  };
+
+  /* ── dom ─────────────────────────────────────────────────────── */
+  function $(id) { return document.getElementById(id); }
+  var elApp = $('app');
+  var elGate = $('gate');
+  var elGateSub = $('gateSub');
+  var elTrustText = $('trustText');
+  var elFeed = $('feed');
+  var elFeedTotal = $('feedTotal');
+  var elNote = $('feedNote');
+  var elNoteTitle = $('feedNoteTitle');
+  var elNoteText = $('feedNoteText');
+  var elRetry = $('btnRetry');
+  var elReset = $('btnReset');
+  var elMoreWrap = $('moreWrap');
+  var elMore = $('btnMore');
+  var elFeedEnd = $('feedEnd');
+  var elSentinel = $('sentinel');
+  var elSearch = $('searchInput');
+  var elAdm = $('admToggle');
+  var elChips = $('chipRow');
+  var elToast = $('toast');
+  var elErrbar = $('errbar');
+  var elErrText = $('errbarText');
+  var elSheet = $('sheet');
+  var elSheetBack = $('sheetBack');
+  var elSeg = $('segTheme');
+  var elSwGlass = $('swGlass');
+
+  /* ── утилиты ─────────────────────────────────────────────────── */
+  /* el(тег, класс, текст) — данные только через textContent */
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  function toUnixMs(u) { u = Number(u) || 0; return u > 1e12 ? u : u * 1000; }
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  /* время МСК: dd.mm HH:MM:SS (UTC+3, без перехода на летнее) */
+  function fmtMsk(u) {
+    var ms = toUnixMs(u);
+    if (!ms) return '—';
+    var d = new Date(ms + MSK_MS);
+    return pad2(d.getUTCDate()) + '.' + pad2(d.getUTCMonth() + 1) + ' ' +
+      pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds());
+  }
+  function fmtMskTitle(u) {
+    var ms = toUnixMs(u);
+    if (!ms) return '';
+    var d = new Date(ms + MSK_MS);
+    return pad2(d.getUTCDate()) + '.' + pad2(d.getUTCMonth() + 1) + '.' + d.getUTCFullYear() + ' ' +
+      pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds()) + ' мск';
+  }
+  function nowHM() {
+    var d = new Date();
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+  function plural(n, one, few, many) {
+    n = Math.abs(Number(n) || 0) % 100;
+    var d = n % 10;
+    if (n > 10 && n < 20) return many;
+    if (d > 1 && d < 5) return few;
+    if (d === 1) return one;
+    return many;
+  }
+  /* 1120 → «1 120» */
+  function fmtNum(n) {
+    return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  }
+  function reducedMotion() {
+    try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
+  }
+  function haptic(kind) {
+    try {
+      if (tg && tg.HapticFeedback && typeof tg.HapticFeedback.impactOccurred === 'function') {
+        tg.HapticFeedback.impactOccurred(kind || 'light');
+      }
+    } catch (e) { /* noop */ }
+  }
+
+  /* фолбэки аватарок: error не всплывает — ловим на capture-фазе;
+     фото загрузилось — мягко проявить поверх монограммы */
+  document.addEventListener('error', function (ev) {
+    var img = ev.target;
+    if (img && img.tagName === 'IMG' && img.parentNode && img.parentNode.classList &&
+        img.parentNode.classList.contains('ava')) {
+      img.hidden = true; /* монограмма под фото уже видна */
+    }
+  }, true);
+  document.addEventListener('load', function (ev) {
+    var img = ev.target;
+    if (img && img.tagName === 'IMG' && img.parentNode && img.parentNode.classList &&
+        img.parentNode.classList.contains('ava')) {
+      img.classList.add('ld');
+    }
+  }, true);
+
+  /* ── тосты и плашка ошибок ───────────────────────────────────── */
+  var toastTimer = null;
+  function toast(msg) {
+    elToast.textContent = msg;
+    elToast.hidden = false;
+    requestAnimationFrame(function () { elToast.classList.add('show'); });
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      elToast.classList.remove('show');
+      setTimeout(function () { elToast.hidden = true; }, 240);
+    }, 1900);
+  }
+  var errTimer = null;
+  function showErr(msg) {
+    elErrText.textContent = msg;
+    elErrbar.classList.add('show');
+    clearTimeout(errTimer);
+    errTimer = setTimeout(function () { elErrbar.classList.remove('show'); }, 4200);
+  }
+
+  /* ── копирование с фолбэком ──────────────────────────────────── */
+  function copyText(text, okMsg) {
+    function done() { toast(okMsg || 'скопировано'); haptic('light'); }
+    function legacy() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      ta.style.fontSize = '16px'; /* iOS: <16px на фокусе зумит вьюпорт */
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) done(); else showErr('не удалось скопировать');
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, legacy);
+    } else legacy();
+  }
+
+  /* ── темы и жидкое стекло (localStorage famas_theme / famas_glass) ── */
+  function getTheme() { return document.documentElement.getAttribute('data-theme') === 'dracula' ? 'dracula' : 'bw'; }
+  function getGlass() { return document.documentElement.getAttribute('data-glass') === '1'; }
+
+  function savePref(key, val) {
+    try { localStorage.setItem(key, val); } catch (e) { /* noop */ }
+    try {
+      if (tg && tg.CloudStorage && typeof tg.CloudStorage.setItem === 'function') {
+        tg.CloudStorage.setItem(key, val, function () { /* fire-and-forget */ });
+      }
+    } catch (e) { /* noop */ }
+  }
+
+  function applyChrome() {
+    var bg = THEME_BG[getTheme()];
+    var meta = $('metaTheme');
+    if (meta) meta.setAttribute('content', bg);
+    if (tg) {
+      try { tg.setHeaderColor(bg); } catch (e) { /* noop */ }
+      try { tg.setBackgroundColor(bg); } catch (e) { /* noop */ }
+    }
+  }
+
+  var themingTimer = null;
+  function crossfade() {
+    document.body.classList.add('theming');
+    clearTimeout(themingTimer);
+    themingTimer = setTimeout(function () { document.body.classList.remove('theming'); }, 280);
+  }
+
+  function setTheme(theme, save, animate) {
+    if (theme !== 'bw' && theme !== 'dracula') theme = 'bw';
+    if (animate) crossfade();
+    document.documentElement.setAttribute('data-theme', theme);
+    applyChrome();
+    syncPrefControls();
+    if (save) savePref(THEME_KEY, theme);
+  }
+  function setGlass(on, save, animate) {
+    if (animate) crossfade();
+    if (on) document.documentElement.setAttribute('data-glass', '1');
+    else document.documentElement.removeAttribute('data-glass');
+    syncPrefControls();
+    if (save) savePref(GLASS_KEY, on ? '1' : '0');
+  }
+
+  function syncPrefControls() {
+    var th = getTheme();
+    var glass = getGlass();
+    elSeg.classList.toggle('dr', th === 'dracula');
+    var btns = elSeg.querySelectorAll('.seg-btn');
+    for (var i = 0; i < btns.length; i++) {
+      var on = btns[i].getAttribute('data-th') === th;
+      btns[i].classList.toggle('active', on);
+      btns[i].setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+    elSwGlass.classList.toggle('on', glass);
+    elSwGlass.setAttribute('aria-checked', glass ? 'true' : 'false');
+  }
+
+  /* при старте: если в localStorage пусто — подтянуть из CloudStorage */
+  function loadPrefsFromCloud() {
+    var hasLocalTheme = false, hasLocalGlass = false;
+    try {
+      hasLocalTheme = localStorage.getItem(THEME_KEY) !== null;
+      hasLocalGlass = localStorage.getItem(GLASS_KEY) !== null;
+    } catch (e) { /* noop */ }
+    if (hasLocalTheme && hasLocalGlass) return;
+    try {
+      if (tg && tg.CloudStorage && typeof tg.CloudStorage.getItems === 'function') {
+        tg.CloudStorage.getItems([THEME_KEY, GLASS_KEY], function (err, vals) {
+          if (err || !vals) return;
+          try {
+            if (!hasLocalTheme && (vals[THEME_KEY] === 'bw' || vals[THEME_KEY] === 'dracula')) {
+              setTheme(vals[THEME_KEY], false, true);
+              try { localStorage.setItem(THEME_KEY, vals[THEME_KEY]); } catch (e2) { /* noop */ }
+            }
+            if (!hasLocalGlass && (vals[GLASS_KEY] === '1' || vals[GLASS_KEY] === '0')) {
+              setGlass(vals[GLASS_KEY] === '1', false, true);
+              try { localStorage.setItem(GLASS_KEY, vals[GLASS_KEY]); } catch (e3) { /* noop */ }
+            }
+          } catch (e4) { /* noop */ }
+        });
+      }
+    } catch (e) { /* noop */ }
+  }
+
+  /* ── кнопка «назад» Telegram: шит → закрыть, иначе → в админку ── */
+  function updateBackBtn() {
+    try {
+      if (tg && tg.BackButton) { if (S.gate) tg.BackButton.hide(); else tg.BackButton.show(); }
+    } catch (e) { /* noop */ }
+  }
+
+  /* ── bottom-sheet настроек ───────────────────────────────────── */
+  function openSheet() {
+    S.sheetOpen = true;
+    elSheetBack.hidden = false;
+    elSheet.hidden = false;
+    requestAnimationFrame(function () {
+      elSheetBack.classList.add('in');
+      elSheet.classList.add('in');
+    });
+    haptic('light');
+    updateBackBtn();
+  }
+  function closeSheet() {
+    S.sheetOpen = false;
+    elSheetBack.classList.remove('in');
+    elSheet.classList.remove('in');
+    setTimeout(function () { elSheetBack.hidden = true; elSheet.hidden = true; }, 320);
+    updateBackBtn();
+  }
+
+  /* драг шита за ручку/свободную зону: дальше 84px — закрытие */
+  var drag = { on: false, y0: 0, dy: 0 };
+  function sheetDragMove(ev) {
+    if (!drag.on) return;
+    drag.dy = Math.max(0, ev.clientY - drag.y0);
+    elSheet.style.transform = 'translateY(' + drag.dy + 'px)';
+    elSheetBack.style.opacity = String(Math.max(0, 1 - drag.dy / 260));
+  }
+  function sheetDragEnd() {
+    if (!drag.on) return;
+    drag.on = false;
+    var dy = drag.dy;
+    elSheet.classList.remove('drag');
+    if (dy > 84) {
+      requestAnimationFrame(function () {
+        elSheet.style.transform = '';
+        elSheetBack.style.opacity = '';
+        closeSheet();
+        haptic('light');
+      });
+    } else {
+      elSheet.style.transform = '';
+      elSheetBack.style.opacity = '';
+    }
+  }
+  function bindSheetDrag() {
+    if (!window.PointerEvent) return;
+    elSheet.addEventListener('pointerdown', function (ev) {
+      if (ev.target.closest('button, input')) return;
+      drag.on = true;
+      drag.y0 = ev.clientY;
+      drag.dy = 0;
+      elSheet.classList.add('drag');
+      try { elSheet.setPointerCapture(ev.pointerId); } catch (e) { /* noop */ }
+    });
+    elSheet.addEventListener('pointermove', sheetDragMove);
+    elSheet.addEventListener('pointerup', sheetDragEnd);
+    elSheet.addEventListener('pointercancel', sheetDragEnd);
+  }
+
+  /* ── сеть ────────────────────────────────────────────────────── */
+  /* fetch с таймаутом; 401/403 помечаются e.forbidden → экран-заглушка */
+  function fetchJson(url, ms) {
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var t = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) { /* noop */ } }, ms || 15000) : null;
+    return fetch(url, ctl ? { signal: ctl.signal } : {}).then(function (r) {
+      if (t) clearTimeout(t);
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (r.status === 401 || r.status === 403) {
+          var ef = new Error((d && d.error) || 'Доступ только для администратора');
+          ef.forbidden = true;
+          throw ef;
+        }
+        if (!r.ok || !d || d.ok !== true) {
+          var e2 = new Error((d && d.error) || ('HTTP ' + r.status));
+          e2.status = r.status;
+          throw e2;
+        }
+        return d;
+      });
+    }, function (e) {
+      if (t) clearTimeout(t);
+      throw e;
+    });
+  }
+
+  /* ── экран «только для администратора» ───────────────────────── */
+  function showGate(reason) {
+    S.gate = true;
+    elApp.hidden = true;
+    elGate.hidden = false;
+    if (elGateSub) {
+      elGateSub.textContent = reason === 'noauth'
+        ? 'журнал открывается из бота: /admin → «🧾 логи»'
+        : 'этот аккаунт не входит в список администраторов магазина';
+    }
+    try { if (tg && tg.BackButton) tg.BackButton.hide(); } catch (e) { /* noop */ }
+  }
+
+  /* ── каунт-ап плиток ─────────────────────────────────────────── */
+  function animNum(el2, to) {
+    if (!el2) return;
+    to = Math.max(0, Math.round(Number(to) || 0));
+    var from = Number(el2.getAttribute('data-v')) || 0;
+    el2.setAttribute('data-v', String(to));
+    if (reducedMotion() || from === to) {
+      if (el2.__raf) { cancelAnimationFrame(el2.__raf); el2.__raf = null; }
+      el2.textContent = fmtNum(to);
+      return;
+    }
+    var t0 = null;
+    var dur = 700;
+    if (el2.__raf) cancelAnimationFrame(el2.__raf);
+    function step(ts) {
+      if (t0 === null) t0 = ts;
+      var k = Math.min((ts - t0) / dur, 1);
+      k = 1 - Math.pow(1 - k, 3); /* easeOutCubic */
+      el2.textContent = fmtNum(from + (to - from) * k);
+      if (k < 1) el2.__raf = requestAnimationFrame(step);
+      else el2.__raf = null;
+    }
+    el2.__raf = requestAnimationFrame(step);
+  }
+
+  /* имя владельца — только для строки доверия (initDataUnsafe, отображение) */
+  var adminName = '';
+  try {
+    var tu = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+    if (tu) adminName = String(tu.first_name || tu.username || '').trim();
+  } catch (e) { /* noop */ }
+
+  function setTrust() {
+    elTrustText.textContent = (adminName ? 'владелец: ' + adminName + ' · ' : '') +
+      'журнал ' + nowHM();
+  }
+
+  /* ── активность: GET /famas/admin/api/activity (SPEC-V3 §A4) ──── */
+  /* поле — на верхнем уровне ответа; на всякий случай смотрим и в .stats */
+  function stat(d, k) {
+    if (d && d[k] !== undefined && d[k] !== null) return d[k];
+    if (d && d.stats && d.stats[k] !== undefined && d.stats[k] !== null) return d.stats[k];
+    return 0;
+  }
+  function loadActivity(silent) {
+    return fetchJson(API + '/activity?initData=' + INIT_Q)
+      .then(function (d) {
+        animNum($('stUsers'), stat(d, 'totalUsers'));
+        animNum($('stToday'), stat(d, 'activeToday'));
+        animNum($('stWeek'), stat(d, 'active7d'));
+        animNum($('stActs'), stat(d, 'actionsToday'));
+        animNum($('stAdmins'), stat(d, 'admins'));
+        setTrust();
+        return true;
+      })
+      .catch(function (e) {
+        if (e && e.forbidden) { showGate('forbidden'); return false; }
+        elTrustText.textContent = 'нет связи';
+        if (!silent) showErr('не удалось загрузить активность — проверь сеть');
+        return false;
+      });
+  }
+
+  /* ── чипы действий: собираются из пришедших строк журнала ────── */
+  var chipSeen = Object.create(null);
+  var chipOrder = [];
+  function collectActions(rows) {
+    var added = false;
+    for (var i = 0; i < rows.length; i++) {
+      var a = String((rows[i] && rows[i].action) || '').trim();
+      if (!a || chipSeen[a]) continue;
+      chipSeen[a] = 1;
+      chipOrder.push(a);
+      added = true;
+    }
+    return added;
+  }
+  function makeChip(label, val) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'sortchip mono' + (val ? ' chip-action' : '');
+    b.setAttribute('role', 'radio');
+    var on = val === S.action;
+    if (on) b.classList.add('active');
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+    b.setAttribute('data-action', val);
+    b.textContent = label; /* значение из данных — только textContent */
+    if (val) b.title = val;
+    return b;
+  }
+  function renderChips() {
+    var keep = elChips.scrollLeft;
+    elChips.textContent = '';
+    var frag = document.createDocumentFragment();
+    frag.appendChild(makeChip('⁂ все', ''));
+    var list = chipOrder.slice(0, CHIP_MAX);
+    if (S.action && list.indexOf(S.action) < 0) list.unshift(S.action);
+    for (var i = 0; i < list.length; i++) frag.appendChild(makeChip(list[i], list[i]));
+    elChips.appendChild(frag);
+    elChips.scrollLeft = keep;
+  }
+  function setAction(a) {
+    a = String(a || '');
+    if (a === S.action) return;
+    S.action = a;
+    renderChips();
+    try {
+      var act = elChips.querySelector('.sortchip.active');
+      if (act && typeof act.scrollIntoView === 'function') {
+        act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    } catch (e) { /* noop */ }
+    loadLog(true);
+  }
+  function syncAdmToggle() {
+    elAdm.classList.toggle('active', S.adminOnly);
+    elAdm.setAttribute('aria-checked', S.adminOnly ? 'true' : 'false');
+  }
+  function hasFilters() { return !!(S.q || S.action || S.adminOnly); }
+  function resetFilters() {
+    S.q = '';
+    elSearch.value = '';
+    S.adminOnly = false;
+    syncAdmToggle();
+    S.action = '';
+    renderChips();
+    loadLog(true);
+  }
+
+  /* ── строки журнала ──────────────────────────────────────────── */
+  function badgeEl(kind) {
+    var k = String(kind || '').toLowerCase();
+    if (k === 'command') return el('span', 'badge k-command', '⌘ команда');
+    if (k === 'callback') return el('span', 'badge k-callback', '👆 кнопка');
+    if (k === 'message') return el('span', 'badge k-message', '💬 текст');
+    return el('span', 'badge', k || '·');
+  }
+  /* круглый аватар: фото через админ-прокси поверх инициал-заглушки */
+  function avatarEl(r) {
+    var uid = String(r.userId === null || r.userId === undefined ? '' : r.userId);
+    var name = String(r.username || '').trim();
+    var letter = '⁂';
+    if (name) {
+      try { letter = Array.from(name)[0].toUpperCase(); }
+      catch (e) { letter = name.charAt(0).toUpperCase(); }
+    }
+    var hue = Math.abs(Math.round(Number(r.userId) || 0)) % 8;
+    var span = el('span', 'ava sm c' + hue);
+    span.appendChild(el('i', 'ava-fb serif', letter));
+    if (initData && /^\d+$/.test(uid)) {
+      var img = document.createElement('img');
+      img.src = AVA_URL + uid + '?initData=' + INIT_Q;
+      img.alt = '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.draggable = false;
+      span.appendChild(img);
+    }
+    return span;
+  }
+  /* карточка действия — поля по SPEC-V3 §A4: ts,userId,username,isAdmin,kind,action,detail */
+  function makeRow(r, delayMs) {
+    r = r || {};
+    var uid = String(r.userId === null || r.userId === undefined ? '' : r.userId);
+    var hasNick = !!r.username;
+    var uname = hasNick ? '@' + String(r.username) : 'без ника';
+    var action = String(r.action === null || r.action === undefined ? '' : r.action).trim();
+    var detail = String(r.detail === null || r.detail === undefined ? '' : r.detail).trim();
+
+    var card = el('article', 'lcard gl in' + (r.isAdmin ? ' is-adm' : ''));
+    card.style.animationDelay = delayMs + 'ms';
+
+    /* верх: аватар + @ник·id (клик = копия id) + время МСК */
+    var top = el('div', 'l-top');
+    top.appendChild(avatarEl(r));
+
+    var user = document.createElement('button');
+    user.type = 'button';
+    user.className = 'l-user';
+    user.setAttribute('data-id', uid);
+    user.setAttribute('aria-label', 'Скопировать id пользователя');
+    user.appendChild(el('b', 'lu-name' + (hasNick ? '' : ' noun'), uname));
+    user.appendChild(el('span', 'lu-id mono', '· ' + (uid || '—')));
+    var cp = el('span', 'cp', '⧉');
+    cp.setAttribute('aria-hidden', 'true');
+    user.appendChild(cp);
+    top.appendChild(user);
+
+    var time = el('span', 'l-time mono', fmtMsk(r.ts));
+    time.title = fmtMskTitle(r.ts);
+    top.appendChild(time);
+    card.appendChild(top);
+
+    /* середина: бейдж kind (+ 🛡 админ) + action-моно (клик = фильтр) */
+    var mid = el('div', 'l-mid');
+    mid.appendChild(badgeEl(r.kind));
+    if (r.isAdmin) mid.appendChild(el('span', 'badge adm', '🛡 админ'));
+    var act = document.createElement('button');
+    act.type = 'button';
+    act.className = 'l-action mono';
+    act.textContent = action || '—';
+    if (action) {
+      act.setAttribute('data-actf', action);
+      act.title = 'фильтр: ' + action;
+      act.setAttribute('aria-label', 'Фильтровать по действию ' + action);
+    } else {
+      act.disabled = true;
+    }
+    mid.appendChild(act);
+    card.appendChild(mid);
+
+    /* деталь (обрезана на сервере до ~120 симв) */
+    if (detail) card.appendChild(el('p', 'l-detail', detail));
+    return card;
+  }
+
+  /* ── лента ───────────────────────────────────────────────────── */
+  function skeletons() {
+    elFeed.textContent = '';
+    for (var i = 0; i < 6; i++) elFeed.appendChild(el('div', 'skel-row gl'));
+  }
+  function hideNote() { elNote.hidden = true; }
+  function showNote(title, text, retry, reset) {
+    elNote.hidden = false;
+    elNoteTitle.textContent = title;
+    elNoteText.textContent = text;
+    elRetry.hidden = !retry;
+    elReset.hidden = !reset;
+  }
+  function setMoreBusy(b) {
+    elMore.classList.toggle('busy', b);
+    elMore.disabled = b;
+  }
+  function updateFeedMeta() {
+    elFeedTotal.textContent = S.total >= 0 ? '· ' + fmtNum(S.total) : '';
+    var done = S.total >= 0 && S.count >= S.total;
+    elMoreWrap.hidden = done || S.count === 0;
+    var showEnd = done && S.count > 0 && S.total > LIMIT;
+    elFeedEnd.hidden = !showEnd;
+    if (showEnd) {
+      elFeedEnd.textContent = '⁂ показано всё · ' + fmtNum(S.total) + ' ' +
+        plural(S.total, 'действие', 'действия', 'действий');
+    }
+  }
+
+  /* GET /famas/admin/api/log — user/action/admin/limit/offset по SPEC-V3 §A4 */
+  function loadLog(reset) {
+    if (S.busy) return;
+    S.busy = true;
+    setMoreBusy(true);
+    if (reset) {
+      S.offset = 0;
+      S.count = 0;
+      S.total = -1;
+      hideNote();
+      elMoreWrap.hidden = true;
+      elFeedEnd.hidden = true;
+      skeletons();
+      updateFeedMeta();
+    }
+    var url = API + '/log?initData=' + INIT_Q + '&limit=' + LIMIT + '&offset=' + S.offset;
+    if (S.q) url += '&user=' + encodeURIComponent(S.q);
+    if (S.action) url += '&action=' + encodeURIComponent(S.action);
+    if (S.adminOnly) url += '&admin=1';
+    fetchJson(url)
+      .then(function (d) {
+        S.busy = false;
+        setMoreBusy(false);
+        S.total = Math.max(0, Number(d.total) || 0);
+        var rows = d.rows || [];
+        if (reset) elFeed.textContent = '';
+        if (collectActions(rows)) renderChips();
+        if (!rows.length && S.count === 0) {
+          if (hasFilters()) showNote('ничего не нашлось', 'попробуй другой ник, id или действие', false, true);
+          else showNote('журнал пока пуст', 'действия появятся здесь, как только кто-то напишет боту', false, false);
+          updateFeedMeta();
+          return;
+        }
+        var frag = document.createDocumentFragment();
+        for (var i = 0; i < rows.length; i++) {
+          frag.appendChild(makeRow(rows[i], Math.min(i * 30, 360)));
+        }
+        elFeed.appendChild(frag);
+        S.offset += rows.length;
+        S.count += rows.length;
+        if (!rows.length) S.total = S.count; /* сервер отдал пусто — дальше не листаем */
+        updateFeedMeta();
+      })
+      .catch(function (e) {
+        S.busy = false;
+        setMoreBusy(false);
+        if (e && e.forbidden) { showGate('forbidden'); return; }
+        if (reset) {
+          elFeed.textContent = '';
+          showNote('нет связи', 'не удалось загрузить журнал — проверь сеть и повтори', true, false);
+        } else {
+          showErr('не удалось догрузить — попробуй ещё раз');
+        }
+      });
+  }
+
+  function maybeMore() {
+    if (S.busy || S.gate || S.total < 0 || S.count === 0 || S.count >= S.total) return;
+    loadLog(false);
+  }
+
+  function refreshAll() {
+    if (S.gate) return;
+    loadActivity(true).then(function (ok) { if (ok) toast('обновлено'); });
+    loadLog(true);
+  }
+
+  /* ── обработчики ─────────────────────────────────────────────── */
+  function bind() {
+    /* поиск по @username/id — дебаунс 350мс, ведущие @ срезаем */
+    var searchTimer = null;
+    function onQuery() {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(function () {
+        var v = elSearch.value.trim().replace(/^@+/, '');
+        if (v === S.q) return;
+        S.q = v;
+        loadLog(true);
+      }, 350);
+    }
+    elSearch.addEventListener('input', onQuery);
+    elSearch.addEventListener('search', onQuery);
+    elSearch.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') elSearch.blur();
+    });
+
+    /* «только админы» */
+    elAdm.addEventListener('click', function () {
+      S.adminOnly = !S.adminOnly;
+      syncAdmToggle();
+      haptic('light');
+      loadLog(true);
+    });
+
+    /* чипы действий */
+    elChips.addEventListener('click', function (ev) {
+      var b = ev.target.closest('.sortchip');
+      if (!b) return;
+      haptic('light');
+      setAction(b.getAttribute('data-action') || '');
+    });
+
+    /* лента: копирование id / фильтр по action из строки */
+    elFeed.addEventListener('click', function (ev) {
+      var userBtn = ev.target.closest('.l-user');
+      if (userBtn) {
+        var id = userBtn.getAttribute('data-id');
+        if (id) copyText(id, 'id скопирован');
+        return;
+      }
+      var actBtn = ev.target.closest('.l-action[data-actf]');
+      if (actBtn) {
+        var a = actBtn.getAttribute('data-actf') || '';
+        if (a && a !== S.action) {
+          haptic('light');
+          toast('фильтр: ' + a);
+          setAction(a);
+        }
+      }
+    });
+
+    /* «показать ещё» + бесконечный скролл */
+    elMore.addEventListener('click', function () { haptic('light'); maybeMore(); });
+    if ('IntersectionObserver' in window) {
+      var io = new IntersectionObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i].isIntersecting) { maybeMore(); break; }
+        }
+      }, { rootMargin: '600px 0px' });
+      io.observe(elSentinel);
+    }
+
+    elRetry.addEventListener('click', function () {
+      haptic('light');
+      loadActivity(true);
+      loadLog(true);
+    });
+    elReset.addEventListener('click', function () {
+      haptic('light');
+      resetFilters();
+    });
+
+    /* обновить всё (спин иконки) */
+    $('btnRefresh').addEventListener('click', function () {
+      var b = this;
+      b.classList.remove('spin');
+      void b.offsetWidth; /* перезапуск оборота иконки */
+      b.classList.add('spin');
+      haptic('light');
+      refreshAll();
+    });
+
+    /* настройки */
+    $('btnSettings').addEventListener('click', openSheet);
+    elSheetBack.addEventListener('click', closeSheet);
+    elSheet.querySelector('.sheet-handle').addEventListener('click', closeSheet);
+    elSeg.addEventListener('click', function (ev) {
+      var b = ev.target.closest('.seg-btn');
+      if (b) { setTheme(b.getAttribute('data-th'), true, true); haptic('light'); }
+    });
+    elSwGlass.addEventListener('click', function () {
+      setGlass(!getGlass(), true, true);
+      haptic('light');
+    });
+    bindSheetDrag();
+
+    /* «назад» Telegram: открыт шит → закрыть; иначе → в админку. Escape — шит */
+    try {
+      if (tg && tg.BackButton && typeof tg.BackButton.onClick === 'function') {
+        tg.BackButton.onClick(function () {
+          if (S.sheetOpen) closeSheet();
+          else window.location.href = './';
+        });
+      }
+    } catch (e) { /* noop */ }
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && S.sheetOpen) closeSheet();
+    });
+  }
+
+  /* ── старт ───────────────────────────────────────────────────── */
+  function init() {
+    applyChrome();
+    syncPrefControls();
+    loadPrefsFromCloud();
+    renderChips();
+    bind();
+    /* нет initData (открыто вне Telegram) → «⛔ доступ только для администратора» */
+    if (!initData) { showGate('noauth'); return; }
+    updateBackBtn();
+    loadActivity(false);
+    loadLog(true);
+    /* живая активность: тихий рефреш раз в 90 сек + при возврате в апп */
+    setInterval(function () {
+      if (!S.gate && document.visibilityState === 'visible') loadActivity(true);
+    }, 90000);
+    document.addEventListener('visibilitychange', function () {
+      if (!S.gate && document.visibilityState === 'visible') loadActivity(true);
+    });
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

@@ -6,6 +6,8 @@
    SPEC-MERGE: «МОИ КЛЮЧИ» — объединение всех ключей в ОДИН (merge/unmerge + QR)
    SPEC-GROWTH2: каталог «⚪ Белые списки 🆕» (white, цена из API) рядом с основным
                  + анти-фрод тексты рефералки (бонус за друга, который КУПИЛ)
+   SPEC-V3 §B: третий каталог «⚠️ Нестабильные» (unstable, дёшево — цена из API,
+               регионы с 1..3 живыми) + заметная плашка-предупреждение о риске
    ═══════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
@@ -32,12 +34,13 @@
   /* ── состояние ───────────────────────────────────────────────── */
   var S = {
     regions: [],
-    /* SPEC-GROWTH2 §B: два каталога — основной (black) и «Белые списки» (white).
-       cat — кэш последних полезных нагрузок /api/regions по спискам: переключение
-       мгновенное (рендер из кэша + тихий рефреш); sig — подпись данных, тихий
-       рефреш не трогает DOM без изменений. */
-    list: 'black',      // активный каталог: 'black' | 'white'
-    cat: { black: null, white: null }, // list -> {data, sig}
+    /* SPEC-GROWTH2 §B + SPEC-V3 §B: три каталога — основной (black), «Белые
+       списки» (white) и «⚠️ Нестабильные» (unstable: регионы с ≤3 живыми, дёшево,
+       с предупреждением). cat — кэш последних полезных нагрузок /api/regions по
+       спискам: переключение мгновенное (рендер из кэша + тихий рефреш); sig —
+       подпись данных, тихий рефреш не трогает DOM без изменений. */
+    list: 'black',      // активный каталог: 'black' | 'white' | 'unstable'
+    cat: { black: null, white: null, unstable: null }, // list -> {data, sig}
     price: 20,          // base: 1-й сервер региона (из /api/regions, не хардкод)
     extra: 10,          // SPEC-QTY: каждый доп. сервер того же региона (из /api/regions)
     subDays: 30,
@@ -68,10 +71,10 @@
     mergeBusy: false,   // идёт POST /api/merge
     qrOpen: false       // открыт QR-оверлей объединённого ключа
   };
-  /* SPEC-GROWTH2 §B: выбор регионов хранится ОТДЕЛЬНО для каждого каталога —
-     переключение black/white не смешивает корзины. Инвариант: S.sel ВСЕГДА
-     ссылается на S.sels[S.list] (мутируем на месте; при пересоздании — синхрон). */
-  S.sels = { black: S.sel, white: {} };
+  /* SPEC-GROWTH2 §B + SPEC-V3 §B: выбор регионов хранится ОТДЕЛЬНО для каждого
+     каталога — переключение black/white/unstable не смешивает корзины. Инвариант:
+     S.sel ВСЕГДА ссылается на S.sels[S.list] (мутируем на месте; при пересоздании — синхрон). */
+  S.sels = { black: S.sel, white: {}, unstable: {} };
 
   /* ── dom ─────────────────────────────────────────────────────── */
   function $(id) { return document.getElementById(id); }
@@ -104,8 +107,9 @@
   var elSearchWrap = $('searchWrap');
   var elSearchInput = $('searchInput');
   var elSortRow = $('sortRow');
-  var elListRow = $('listRow');   /* SPEC-GROWTH2 §B: переключатель каталогов black/white */
+  var elListRow = $('listRow');   /* SPEC-GROWTH2 §B: переключатель каталогов black/white/unstable */
   var elListNote = $('listNote'); /* пояснение к белым спискам (видно в white) */
+  var elUnstNote = $('unstableNote'); /* SPEC-V3 §B: плашка-предупреждение (видна в unstable) */
   var elTabInd = $('tabInd');
 
   /* ── утилиты ─────────────────────────────────────────────────── */
@@ -519,7 +523,9 @@
       elGrid.innerHTML = '';
       showNote(S.list === 'white'
         ? 'белые списки пополняются — загляни чуть позже'
-        : 'база обновляется — загляни через минуту', true);
+        : S.list === 'unstable'
+          ? 'нестабильных серверов сейчас нет — все регионы работают стабильно'
+          : 'база обновляется — загляни через минуту', true);
       return;
     }
     hideNote();
@@ -618,19 +624,32 @@
     });
   }
 
-  /* ── SPEC-GROWTH2 §B: каталоги black/white ───────────────────── */
+  /* ── SPEC-GROWTH2 §B + SPEC-V3 §B: каталоги black/white/unstable ── */
   function fetchCatalog(list) {
-    return fetchJson(API + '/regions' + (list === 'white' ? '?list=white' : ''));
+    var qs = list === 'black' ? '' : '?list=' + encodeURIComponent(list);
+    return fetchJson(API + '/regions' + qs).then(function (d) {
+      /* сервер без поддержки раздела (деплой-скью/старый кэш) эхом отдаёт другой
+         list — не рисуем ЧУЖОЙ каталог под чужим заголовком/ценой: пустая витрина */
+      if (d && d.ok && d.list && d.list !== list) {
+        return {
+          ok: true, list: list, regions: [], price: 0,
+          extra: d.extra, subDays: d.subDays, total: 0, updatedAt: d.updatedAt || 0
+        };
+      }
+      return d;
+    });
   }
   function catRec(list) {
     if (!S.cat[list]) S.cat[list] = { data: null, sig: '' };
     return S.cat[list];
   }
+  /* id живой цены на кнопке переключателя каталогов */
+  var LIST_PRICE_EL = { black: 'lbPriceBlack', white: 'lbPriceWhite', unstable: 'lbPriceUnstable' };
   /* кэш полезной нагрузки + живая цена на кнопке переключателя
-     (обновляется и для НЕактивного каталога — префетч white) */
+     (обновляется и для НЕактивных каталогов — префетч white/unstable) */
   function cacheCatalog(list, d) {
     catRec(list).data = d;
-    var el = $(list === 'white' ? 'lbPriceWhite' : 'lbPriceBlack');
+    var el = LIST_PRICE_EL[list] ? $(LIST_PRICE_EL[list]) : null;
     if (el && d && typeof d.price !== 'undefined' && Number(d.price) > 0) {
       el.textContent = 'от ' + fmtNum(d.price) + ' ⭐';
     }
@@ -722,7 +741,7 @@
 
   /* переключение каталога: корзины раздельные, рендер из кэша мгновенный */
   function switchList(list) {
-    if (list !== 'black' && list !== 'white') list = 'black';
+    if (list !== 'black' && list !== 'white' && list !== 'unstable') list = 'black';
     if (list === S.list) return;
     S.list = list;
     S.sel = S.sels[list];
@@ -749,6 +768,8 @@
       }
     }
     if (elListNote) elListNote.hidden = S.list !== 'white';
+    /* SPEC-V3 §B: ЗАМЕТНОЕ предупреждение о риске — только в нестабильном каталоге */
+    if (elUnstNote) elUnstNote.hidden = S.list !== 'unstable';
   }
 
   /* ── бесплатные регионы (SPEC-FREE) ──────────────────────────── */
@@ -959,9 +980,9 @@
     var afterFree = Math.max(0, totalCost - freeUsed * S.price);
     var bonusUsed = Math.min(S.bonus, afterFree);
     var total = afterFree - bonusUsed;
-    /* SPEC-GROWTH2 §B: в white-каталоге суммы считаются от его base/extra (из API),
-       и панель явно помечает, что оплачиваются белые списки */
-    var line = (S.list === 'white' ? '⚪ БЕЛЫЕ · ' : '') +
+    /* SPEC-GROWTH2 §B + SPEC-V3 §B: в white/unstable суммы считаются от base/extra
+       ИХ каталога (из API), и панель явно помечает, какой каталог оплачивается */
+    var line = (S.list === 'white' ? '⚪ БЕЛЫЕ · ' : S.list === 'unstable' ? '⚠️ НЕСТАБИЛЬНЫЕ · ' : '') +
       'СТРАН: ' + n + ' · СЕРВЕРОВ: ' + st.servers;
     if (freeUsed > 0 && n > 0) line += ' · ' + freeUsed + ' БЕСПЛАТНО';
     elPayLine.textContent = line;
@@ -1007,8 +1028,9 @@
     if (S.payBusy || !S.selCount) return;
     if (!tg || !initData) { showErr('открой мини-апп внутри Telegram, чтобы оплатить'); return; }
     /* SPEC-QTY: новый формат тела — items:[{iso,qty}]; итог всегда считает сервер.
-       SPEC-GROWTH2 §B: list — из какого каталога заказ ('white' → base=50 на сервере);
-       фиксируем на момент клика: пока открыт инвойс, каталог могли переключить. */
+       SPEC-GROWTH2 §B + SPEC-V3 §B: list — из какого каталога заказ ('white' →
+       base=50, 'unstable' → base=7 на сервере); фиксируем на момент клика:
+       пока открыт инвойс, каталог могли переключить. */
     var payList = S.list;
     var items = [];
     Object.keys(S.sel).forEach(function (iso) {
@@ -1650,9 +1672,11 @@
     var openPanels = document.querySelectorAll('.acc-item.open .acc-panel');
     for (var i = 0; i < openPanels.length; i++) openPanels[i].style.maxHeight = 'none';
     loadRegions(false);
-    /* SPEC-GROWTH2 §B: тихий префетч белых списков — переключение мгновенное,
-       цена на кнопке настоящая; чуть позже старта, чтобы не толкаться с витриной */
+    /* SPEC-GROWTH2 §B + SPEC-V3 §B: тихий префетч неактивных каталогов —
+       переключение мгновенное, цены на кнопках настоящие (из API); чуть позже
+       старта и вразнобой, чтобы не толкаться с витриной */
     setTimeout(function () { prefetchCatalog('white'); }, 900);
+    setTimeout(function () { prefetchCatalog('unstable'); }, 1500);
     updatePaybar(true);
     /* SPEC-REFERRAL: первичный рендер «Друзей» (пустое состояние/фолбэк-ссылка до ответа API) */
     renderFriends();

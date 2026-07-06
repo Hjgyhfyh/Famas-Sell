@@ -62,8 +62,9 @@
       <div class="freebadge bonusbadge gl mono" id="bonusBadge" role="button" tabindex="0" hidden></div>
     </header>
 
-    <!-- SPEC-GROWTH2 §B: переключатель каталогов — основной (black, 20⭐) рядом
-         с «⚪ Белые списки 🆕» (white, 50⭐); цены живые, из /api/regions -->
+    <!-- SPEC-GROWTH2 §B + SPEC-V3 §B: переключатель каталогов — основной (black,
+         20⭐) · «⚪ Белые списки 🆕» (white, 50⭐) · «⚠️ Нестабильные» (unstable, 7⭐,
+         регионы с ≤3 живыми, на свой риск); цены живые, из /api/regions -->
     <div class="listrow" id="listRow" role="radiogroup" aria-label="Выбор каталога">
       <button type="button" class="listbtn gl active" role="radio" aria-checked="true" data-list="black">
         <span class="lb-ico" aria-hidden="true">⬛</span>
@@ -74,9 +75,18 @@
         <span class="lb-txt"><b class="mono">БЕЛЫЕ СПИСКИ</b><i class="mono" id="lbPriceWhite">от 50 ⭐</i></span>
         <span class="lb-new mono" aria-hidden="true">NEW</span>
       </button>
+      <button type="button" class="listbtn gl unst" role="radio" aria-checked="false" data-list="unstable">
+        <span class="lb-ico" aria-hidden="true">⚠️</span>
+        <span class="lb-txt"><b class="mono">НЕСТАБИЛЬНЫЕ</b><i class="mono" id="lbPriceUnstable">от 7 ⭐</i></span>
+      </button>
     </div>
     <!-- пояснение к белым спискам (JS показывает только в white-каталоге) -->
     <div class="listnote gl mono" id="listNote" hidden>⚪ премиум — работают через белые списки РФ</div>
+    <!-- SPEC-V3 §B: заметная плашка-предупреждение (JS показывает только в unstable-каталоге) -->
+    <div class="unstnote gl mono" id="unstableNote" role="note" hidden>
+      <span class="un-ico" aria-hidden="true">⚠️</span>
+      <span class="un-txt">Серверы могут в любой момент перестать работать — берёшь на свой риск, поэтому дёшево</span>
+    </div>
 
     <div class="section-head">
       <h2 class="mono caps sec"><b>01 /</b> регионы</h2>
@@ -238,6 +248,8 @@
             <p class="a">Запасные адреса и разные точки внутри страны. Первый сервер — по базовой цене, каждый следующий той же страны — дешевле; актуальные цены — в шапке магазина.</p>
             <p class="q">— Что за «белые списки»?</p>
             <p class="a">Премиум-раздел магазина: серверы, работающие через белые списки РФ, — стабильнее в периоды жёстких блокировок. Переключатель каталога — вверху «МАГАЗИНА», цена первого сервера выше основного каталога и показана прямо на переключателе.</p>
+            <p class="q">— Что за «нестабильные» серверы?</p>
+            <p class="a">Регионы, где живых серверов совсем мало (1–3): любой из них может в любой момент перестать работать — поэтому раздел стоит заметно дешевле и продаётся честно, с предупреждением. Берёшь на свой риск; нужна надёжность — выбирай основной каталог или белые списки.</p>
             <p class="q">— Серверы меняются?</p>
             <p class="a">Подписка живая: список конфигов обновляется сам, ссылка остаётся прежней.</p>
             <p class="q">— Сколько действует ключ?</p>

@@ -28,6 +28,8 @@ const BRAND = '⬛️ FAMAS STORE ⁂';
 const SUPPORT_URL = `https://t.me/${config.SUPPORT_USERNAME}`;
 const APP_URL = `${config.PUBLIC_BASE}/app/`;
 const ADMIN_URL = `${config.PUBLIC_BASE}/admin/`;
+// SPEC-V3 §A.5: журнал действий — самодостаточная страница-WebApp (initData + admin-гейт).
+const LOG_URL = `${config.PUBLIC_BASE}/admin/log.html`;
 const BOT_URL = `https://t.me/${config.BOT_USERNAME}`;
 
 /** Персональная реф-ссылка юзера (SPEC-REFERRAL §5): deep-link start=ref<userId>. */
@@ -120,7 +122,10 @@ const PROMPT_TTL = 30 * 60 * 1000;     // админ-промпты (ForceReply)
 const SORT_MODES = ['pop', 'az', 'srv'];
 const SORT_LABEL = { pop: 'Популярные', az: 'А-Я', srv: 'Серверов ↓' };
 
-/** userId -> { map:Map<ISO,qty>, sort:'pop'|'az'|'srv', list:'black'|'white', at:ms } — выбор регионов */
+/** Разделы витрины (SPEC-V3 §B): 'black'=основной(20), 'white'=белые(50), 'unstable'=нестабильные(7). */
+const SHOP_SECTIONS = ['black', 'white', 'unstable'];
+
+/** userId -> { map:Map<ISO,qty>, sort:'pop'|'az'|'srv', list:'black'|'white'|'unstable', at:ms } */
 const selections = new Map();
 /** adminId -> { type:'price'|'days'|'extra'|'gift'|'bcast', msgId, at:ms } */
 const adminPrompts = new Map();
@@ -138,20 +143,21 @@ function getSelState(userId) {
   }
   if (!(entry.map instanceof Map)) entry.map = new Map();
   if (!SORT_MODES.includes(entry.sort)) entry.sort = 'pop';
-  if (entry.list !== 'white') entry.list = 'black';
+  if (!SHOP_SECTIONS.includes(entry.list)) entry.list = 'black';
   entry.at = t;
   return entry;
 }
 
 /**
- * SPEC-GROWTH2 §B.4: переключить активный раздел витрины (чёрный/белый) для юзера. Если раздел
- * СМЕНИЛСЯ — чистим выбор (регионы/доступность у пулов разные) и сбрасываем сортировку на «Популярные»
- * (дефолт белого раздела). Возвращает актуальный st. Вызывается из /vpn (black) и /white (white),
- * а также из кнопок shop/white — чтобы pay/степперы/итог считались по нужному пулу.
+ * SPEC-GROWTH2 §B.4 + SPEC-V3 §B.5: переключить активный раздел витрины для юзера
+ * ('black'=основной, 'white'=белые, 'unstable'=нестабильные). Если раздел СМЕНИЛСЯ — чистим выбор
+ * (регионы/доступность/цена у разделов разные) и сбрасываем сортировку на «Популярные». Возвращает
+ * актуальный st. Вызывается из /vpn, /white, /unstable и одноимённых кнопок — чтобы pay/степперы/итог
+ * считались по нужному разделу.
  */
 function setSelList(userId, listType) {
   const st = getSelState(userId);
-  const lt = listType === 'white' ? 'white' : 'black';
+  const lt = SHOP_SECTIONS.includes(listType) ? listType : 'black';
   if (st.list !== lt) {
     st.map.clear();
     st.list = lt;
@@ -270,6 +276,8 @@ function mainMenuKb(isPrivate) {
     .row()
     .text('⚪ Белые списки 🆕', 'white')
     .row()
+    .text('⚠️ Нестабильные · 7⭐', 'unstable')
+    .row()
     .text('👤 Профиль', 'profile')
     .text('❓ Помощь', 'help')
     .row()
@@ -321,12 +329,18 @@ function catalogView(isPrivate) {
     '02 / БЕЛЫЕ СПИСКИ 🆕',
     THIN,
     `Премиум-серверы через белые списки РФ · ${db.priceStars('white')} ⭐`,
+    '',
+    '03 / ⚠️ НЕСТАБИЛЬНЫЕ',
+    THIN,
+    `Хрупкие регионы (мало живых) · ${db.priceStars('unstable')} ⭐ · на свой риск`,
     LINE,
   ].join('\n');
   const kb = new InlineKeyboard()
     .text('🔐 Выбрать регионы', 'shop')
     .row()
     .text('⚪ Белые списки 🆕', 'white')
+    .row()
+    .text('⚠️ Нестабильные · 7⭐', 'unstable')
     .row();
   if (isPrivate) kb.webApp('⬛ Mini App', APP_URL);
   else kb.url('⬛ Mini App', BOT_URL);
@@ -343,7 +357,8 @@ function shopView(userId, listType) {
   const st = listType !== undefined ? setSelList(userId, listType) : getSelState(userId);
   const lt = st.list;
   const isWhite = lt === 'white';
-  const retryCb = isWhite ? 'white' : 'shop';
+  const isUnstable = lt === 'unstable'; // SPEC-V3 §B.5: раздел «нестабильные» (7⭐, с предупреждением)
+  const retryCb = isWhite ? 'white' : isUnstable ? 'unstable' : 'shop';
 
   let regions = [];
   try {
@@ -358,6 +373,14 @@ function shopView(userId, listType) {
           LINE,
           'Премиум-серверы через белые списки РФ.',
           'Раздел скоро наполнится — загляни позже.',
+        ].join('\n')
+      : isUnstable
+      ? [
+          `${BRAND} · ⚠️ НЕСТАБИЛЬНЫЕ`,
+          LINE,
+          'Сейчас нестабильных регионов нет —',
+          'значит живых серверов везде хватает.',
+          'Загляни в основной раздел: /vpn',
         ].join('\n')
       : [
           BRAND,
@@ -438,14 +461,36 @@ function shopView(userId, listType) {
     kb.text('✦ Выбрать всё', 'all');
   }
 
+  const header = isWhite
+    ? `${BRAND} · БЕЛЫЕ СПИСКИ 🆕`
+    : isUnstable
+    ? `${BRAND} · ⚠️ НЕСТАБИЛЬНЫЕ`
+    : BRAND;
+  const subtitle = isWhite
+    ? 'Б Е Л Ы Е   С П И С К И'
+    : isUnstable
+    ? 'Н Е С Т А Б И Л Ь Н Ы Е · 7 ⭐'
+    : 'В Ы Б О Р   С Е Р В Е Р О В';
+  // SPEC-V3 §B.5: у нестабильного раздела — ЯВНОЕ предупреждение прямо в тексте витрины.
+  const intro = isWhite
+    ? ['Премиум-серверы, работают через белые', 'списки РФ. Отметь страны и число серверов —', 'всё соберётся в одну живую ссылку.']
+    : isUnstable
+    ? [
+        'Регионы, где сейчас мало живых серверов,',
+        `поэтому дёшево — ${base} ⭐ за 1-й сервер.`,
+        '',
+        '⚠️ Серверы могут в любой момент перестать',
+        'работать — берёшь на свой риск. Нужен',
+        'стабильный ключ — выбирай основной раздел /vpn.',
+      ]
+    : ['Отметь страны и число серверов — всё', 'соберётся в одну живую ссылку-подписку.'];
+
   const text = [
-    isWhite ? `${BRAND} · БЕЛЫЕ СПИСКИ 🆕` : BRAND,
+    header,
     LINE,
-    isWhite ? 'Б Е Л Ы Е   С П И С К И' : 'В Ы Б О Р   С Е Р В Е Р О В',
+    subtitle,
     '',
-    ...(isWhite
-      ? ['Премиум-серверы, работают через белые', 'списки РФ. Отметь страны и число серверов —', 'всё соберётся в одну живую ссылку.']
-      : ['Отметь страны и число серверов — всё', 'соберётся в одну живую ссылку-подписку.']),
+    ...intro,
     '',
     `1-й сервер страны: ${base} ⭐ · каждый след.: +${extra} ⭐`,
     `Срок: ${daysWord(db.subDays())}`,
@@ -714,7 +759,11 @@ function adminPanelView(extraLine, isPrivate) {
     .text('🎁 Выдать ключ', 'adm:gift')
     .text('🎁 Бесплатные', 'adm:free');
   // SPEC-ADMIN §5: веб-админка «кто что купил» — web_app только в личке (в группе Telegram отклонит).
-  if (isPrivate) kb.row().webApp('📊 Открыть админку', ADMIN_URL);
+  // SPEC-V3 §A.5: рядом — кнопка «🧾 Логи» (журнал всех действий) на самодостаточную страницу log.html.
+  if (isPrivate) {
+    kb.row().webApp('📊 Открыть админку', ADMIN_URL);
+    kb.row().webApp('🧾 Логи', LOG_URL);
+  }
   return { text: lines.join('\n'), kb };
 }
 
@@ -1204,6 +1253,58 @@ function createBot() {
     return next();
   });
 
+  /* — SPEC-V3 §A.3: единый логгер ВСЕХ действий (для расследований/контроля админов/активности) —
+   * Логирует КАЖДЫЙ апдейт с from: kind='command'|'callback'|'message'; action = имя команды
+   * ('/start','/vpn',…) ИЛИ callback-данные ('pay','r:DE','adm:free',…) ИЛИ 'text'/'payment';
+   * detail = краткая суть (аргументы команды/текст, обрезка ~120 симв). isAdmin = user∈ADMIN_IDS.
+   * ВСЁ в try/catch: логирование НЕ влияет на обработку. Служебные апдейты без from не логируем. */
+  bot.use(async (ctx, next) => {
+    try {
+      const from = ctx.from;
+      if (from && !from.is_bot) {
+        let kind = null;
+        let action = null;
+        let detail = null;
+        if (ctx.callbackQuery && typeof ctx.callbackQuery.data === 'string') {
+          kind = 'callback';
+          action = ctx.callbackQuery.data;
+        } else if (ctx.message) {
+          if (ctx.message.successful_payment) {
+            const sp = ctx.message.successful_payment;
+            kind = 'message';
+            action = 'payment';
+            detail = `${sp.total_amount} XTR · ${sp.invoice_payload || ''}`;
+          } else {
+            const text = typeof ctx.message.text === 'string' ? ctx.message.text : '';
+            const cmd = /^\/([A-Za-z0-9_]+)(?:@\w+)?(?:\s+([\s\S]*))?$/.exec(text.trim());
+            if (cmd) {
+              kind = 'command';
+              action = '/' + cmd[1].toLowerCase();
+              detail = cmd[2] || null;
+            } else {
+              kind = 'message';
+              action = 'text';
+              detail = text || (ctx.message.caption || '') || null;
+            }
+          }
+        }
+        if (kind) {
+          db.logAction({
+            userId: from.id,
+            username: from.username || null,
+            isAdmin: isAdmin(from.id),
+            kind: kind,
+            action: action != null ? String(action).slice(0, 64) : null,
+            detail: detail == null ? null : cut(String(detail), 120),
+          });
+        }
+      }
+    } catch (e) {
+      // SPEC-V3 §A.3: логирование НИКОГДА не влияет на обработку апдейта
+    }
+    return next();
+  });
+
   /* ── команды ── */
 
   bot.command('start', async (ctx) => {
@@ -1289,6 +1390,12 @@ function createBot() {
   // SPEC-GROWTH2 §B.4: отдельный вход в раздел «Белые списки» (пул white, цена 50, сорт «Популярные»).
   bot.command('white', async (ctx) => {
     const v = shopView(ctx.from.id, 'white');
+    await ctx.reply(v.text, msgOpts(v.kb));
+  });
+
+  // SPEC-V3 §B.5: раздел «нестабильные серверы» (регионы с ≤UNSTABLE_MAX живых, цена 7, предупреждение).
+  bot.command('unstable', async (ctx) => {
+    const v = shopView(ctx.from.id, 'unstable');
     await ctx.reply(v.text, msgOpts(v.kb));
   });
 
@@ -1601,6 +1708,13 @@ function createBot() {
     await editOrReply(ctx, v.text, v.kb);
   });
 
+  // SPEC-V3 §B.5: кнопка «⚠️ Нестабильные · 7⭐» (в /start и /catalog) → витрина нестабильного раздела.
+  bot.callbackQuery('unstable', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const v = shopView(ctx.from.id, 'unstable');
+    await editOrReply(ctx, v.text, v.kb);
+  });
+
   bot.callbackQuery('catalog', async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
     const v = catalogView(isPrivateCtx(ctx));
@@ -1769,7 +1883,10 @@ function createBot() {
   bot.callbackQuery('pay', async (ctx) => {
     const uid = ctx.from.id;
     const st = getSelState(uid);
-    const lt = st.list; // SPEC-GROWTH2 §B: активный пул (black|white) — цена/валидация/list_type заказа
+    const lt = st.list; // SPEC-V3 §B: активный РАЗДЕЛ (black=main|white|unstable) — цена/валидация qty
+    // Пул ДОСТАВКИ и orders.list_type: main+unstable → чёрный, white → белый (unstable отличается
+    // от main только ценой/предупреждением, доставляется из того же чёрного пула).
+    const listType = lt === 'white' ? 'white' : 'black';
     let summary = [];
     try {
       summary = db.regionsSummary(lt);
@@ -1821,7 +1938,7 @@ function createBot() {
         freeApplied: q.freeUsed,
         bonusApplied: q.bonusUsed,
         chargeId: 'FREE',
-        listType: lt,
+        listType: listType,
       });
       // free и бонус уже списаны атомарно в reserveOrder (§7b/§4) — отдельного списания тут нет.
       selections.delete(uid); // корзина сыграла
@@ -1859,7 +1976,7 @@ function createBot() {
       days,
       freeApplied: q.freeUsed,
       bonusApplied: q.bonusUsed,
-      listType: lt,
+      listType: listType,
     });
     const meta = regionMetaMap();
     const flags = chosen.map((iso) => {

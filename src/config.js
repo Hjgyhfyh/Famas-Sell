@@ -160,6 +160,13 @@ const config = {
   // SPEC-GROWTH2 §B: цена сервера в разделе «Белые списки» (премиум, РФ-whitelist). Дефолт 50⭐
   // (чёрный каталог — DEFAULT_PRICE_STARS=20). Переопределяется настройкой settings.price_stars_white.
   WHITE_PRICE_STARS: envNum('WHITE_PRICE_STARS', 50),
+  // SPEC-V3 §B: раздел «нестабильные серверы». Хрупкие регионы (мало живых серверов) не скрываются,
+  // а продаются отдельно, дёшево и честно — с предупреждением «сервер может в любой момент перестать
+  // работать». UNSTABLE_PRICE_STARS — цена 1-го сервера в этом разделе (дефолт 7⭐; основной 20, белый 50).
+  // UNSTABLE_MAX_ALIVE — верхняя граница живых серверов региона для попадания в раздел: регион с alive
+  // в диапазоне 1..UNSTABLE_MAX_ALIVE → «нестабильный» (7⭐), с alive > UNSTABLE_MAX_ALIVE → основной (20⭐).
+  UNSTABLE_PRICE_STARS: envNum('UNSTABLE_PRICE_STARS', 7),
+  UNSTABLE_MAX_ALIVE: Math.max(1, Math.floor(envNum('UNSTABLE_MAX_ALIVE', 3))),
   DB_PATH: envStr('DB_PATH', './data/famas.db'),
   SKIP_BOT: /^(1|true|yes)$/i.test(envStr('SKIP_BOT', '0')) ? 1 : 0,
   BOT_USERNAME: envStr('BOT_USERNAME', 'FamasSellerBot').replace(/^@/, ''),

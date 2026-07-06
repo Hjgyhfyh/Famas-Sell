@@ -27,6 +27,9 @@
   --blob1: rgba(255, 255, 255, .07);
   --blob2: rgba(255, 255, 255, .05);
   --blob3: rgba(153, 153, 153, .06);
+  /* SPEC-V3 §B: предупреждающий тон «нестабильных» (в ЧБ остаётся монохром,
+     жёлтый сигнал даёт сам эмодзи ⚠️) */
+  --warn: #fff;
 
   --r-sm: 10px;
   --r-md: 16px;
@@ -72,6 +75,7 @@
   --blob1: rgba(189, 147, 249, .14);
   --blob2: rgba(255, 121, 198, .12);
   --blob3: rgba(139, 233, 253, .10);
+  --warn: #FFB86C; /* SPEC-V3 §B: фирменный dracula-orange для «нестабильных» */
   --pay-shadow: 0 10px 26px -12px rgba(189, 147, 249, .45);
 }
 
@@ -269,13 +273,15 @@ body.theming, body.theming * {
 .sortchip:active { transform: scale(.95); }
 .sortchip.active { background: var(--pay-bg); border-color: transparent; color: var(--pay-text); box-shadow: var(--pay-shadow); }
 
-/* ── SPEC-GROWTH2 §B: переключатель каталогов — основной / белые списки ── */
-.listrow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 6px 18px 12px; }
+/* ── SPEC-GROWTH2 §B + SPEC-V3 §B: переключатель каталогов —
+   основной / белые списки / ⚠️ нестабильные (три равные плитки) ── */
+.listrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 6px 18px 12px; }
 .listbtn {
-  position: relative; min-height: 62px; /* тап-зона ≥44px */
-  display: flex; align-items: center; gap: 10px; text-align: left;
+  position: relative; min-height: 86px; /* тап-зона ≥44px */
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
+  text-align: center;
   background-color: var(--card); border: 1px solid var(--border); border-radius: var(--r-md);
-  color: var(--muted); padding: 12px 13px;
+  color: var(--muted); padding: 12px 6px 11px;
   transition: transform .15s ease, border-color .18s ease, background-color .18s ease, color .18s ease;
 }
 .listbtn:active { transform: scale(.97); }
@@ -283,14 +289,18 @@ body.theming, body.theming * {
   border-color: var(--accent); background-color: var(--card2); color: var(--text);
   box-shadow: 0 6px 18px -12px rgba(0, 0, 0, .6);
 }
+/* SPEC-V3 §B: активные «нестабильные» подсвечены предупреждающим тоном */
+.listbtn.unst.active { border-color: var(--warn); }
 /* лёгкая подкраска активного каталога акцентом (как у выбранной карточки региона) */
 @supports (background: color-mix(in srgb, red 10%, blue)) {
   .listbtn.active { background-color: color-mix(in srgb, var(--accent) 10%, var(--card2)); }
   :root[data-glass="1"] .listbtn.active.gl { background-color: color-mix(in srgb, var(--accent) 14%, var(--glass-bg)); }
+  .listbtn.unst.active { background-color: color-mix(in srgb, var(--warn) 10%, var(--card2)); }
+  :root[data-glass="1"] .listbtn.unst.active.gl { background-color: color-mix(in srgb, var(--warn) 14%, var(--glass-bg)); }
 }
-.lb-ico { font-size: 16px; line-height: 1; flex: none; }
-.lb-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.lb-txt b { font-size: 10px; font-weight: 700; letter-spacing: .1em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lb-ico { font-size: 17px; line-height: 1; flex: none; }
+.lb-txt { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; max-width: 100%; }
+.lb-txt b { font-size: 9px; font-weight: 700; letter-spacing: .06em; line-height: 1.45; white-space: normal; }
 .lb-txt i { font-style: normal; font-size: 9px; letter-spacing: .06em; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .listbtn.active .lb-txt i { color: var(--muted); }
 /* заметный бейдж NEW на «Белых списках» — фирменная пилюля с мягкой пульсацией */
@@ -313,6 +323,26 @@ body.theming, body.theming * {
   animation: fadeUp .3s var(--ease) backwards;
 }
 :root[data-glass="1"] .listnote.gl { border-color: var(--accent); border-style: dashed; }
+
+/* ── SPEC-V3 §B: плашка-предупреждение нестабильного каталога ──
+   ЗАМЕТНАЯ: dashed-рамка предупреждающим тоном, подкраска фона, пульс «⚠️»;
+   JS показывает её только в unstable-каталоге */
+.unstnote {
+  display: flex; align-items: center; gap: 11px;
+  margin: 0 18px 12px; padding: 13px 15px;
+  background-color: var(--card); border: 1px dashed var(--warn); border-radius: var(--r-md);
+  color: var(--text); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  line-height: 1.75; text-align: left;
+  animation: fadeUp .3s var(--ease) backwards;
+}
+:root[data-glass="1"] .unstnote.gl { border-color: var(--warn); border-style: dashed; }
+.un-ico { font-size: 19px; line-height: 1; flex: none; animation: warnPulse 2.2s ease-in-out infinite; }
+.un-txt { flex: 1; min-width: 0; }
+@supports (background: color-mix(in srgb, red 10%, blue)) {
+  .unstnote { background-color: color-mix(in srgb, var(--warn) 8%, var(--card)); }
+  :root[data-glass="1"] .unstnote.gl { background-color: color-mix(in srgb, var(--warn) 12%, var(--glass-bg)); }
+}
+@keyframes warnPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.14); } }
 
 /* ── сетка регионов ── */
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 4px 18px 0; }
@@ -779,6 +809,7 @@ body.theming, body.theming * {
   .sortchip:hover:active { transform: scale(.95); }
   .listbtn:hover { color: var(--text); border-color: var(--muted); transform: translateY(-1px); }
   .listbtn.active:hover { border-color: var(--accent); }
+  .listbtn.unst.active:hover { border-color: var(--warn); }
   .listbtn:hover:active { transform: scale(.97); }
   .qbtn:not(:disabled):hover { border-color: var(--muted); }
   .search input:hover { border-color: var(--muted); }
@@ -816,5 +847,5 @@ body.theming, body.theming * {
   }
   /* спиннеры — индикаторы состояния, оставляем живыми */
   .pb-spin, .mg-spin { animation-duration: .7s !important; }
-  .bl, .dot, .skel::after, .ref-glyph, .mg-ico, .lb-new { animation: none !important; }
+  .bl, .dot, .skel::after, .ref-glyph, .mg-ico, .lb-new, .un-ico { animation: none !important; }
 }

@@ -438,6 +438,67 @@ async function main() {
   check('refresh (upsertConfigs) НЕ сбрасывает alive/alive_fails проданного',
     afterR && Number(afterR.alive) === Number(beforeR.alive) && Number(afterR.alive_fails) === Number(beforeR.alive_fails),
     `before=${JSON.stringify(beforeR)} after=${JSON.stringify(afterR)}`);
+
+  // 10. SPEC-V3 — раздел «нестабильные серверы» (§B) + логгер действий (§A)
+  console.log('');
+  const throws2 = (fn) => { try { fn(); return false; } catch (e) { return true; } };
+
+  // 10.1 §B: цены разделов — main 20 / unstable 7 / white 50 (main/white не тронуты)
+  check('SPEC-V3: priceStars() основной === 20', db.priceStars() === 20, String(db.priceStars()));
+  check('SPEC-V3: priceStars(main) === 20', db.priceStars('main') === 20, String(db.priceStars('main')));
+  check('SPEC-V3: priceStars(unstable) === 7', db.priceStars('unstable') === 7, String(db.priceStars('unstable')));
+  check('SPEC-V3: priceStars(white) === 50', db.priceStars('white') === 50, String(db.priceStars('white')));
+
+  // 10.2 §B: синтетические чёрные регионы — стабильный MC (5 живых, >UNSTABLE_MAX) и хрупкий SM (2 живых, 1..MAX)
+  for (let i = 0; i < 5; i++) insCfg('MC', 'mc' + i + '.example', 9500 + i, 'vless://u@mc' + i + '.example:' + (9500 + i) + '?security=tls#MC', 1);
+  for (let i = 0; i < 2; i++) insCfg('SM', 'sm' + i + '.example', 9520 + i, 'vless://u@sm' + i + '.example:' + (9520 + i) + '?security=tls#SM', 1);
+  const v3main = new Set(db.regionsSummary('main').map((r) => r.iso));
+  const v3unst = new Set(db.regionsSummary('unstable').map((r) => r.iso));
+  check('SPEC-V3: MC (5 живых) в основном разделе', v3main.has('MC'));
+  check('SPEC-V3: MC НЕ в нестабильном', !v3unst.has('MC'));
+  check('SPEC-V3: SM (2 живых) в нестабильном разделе', v3unst.has('SM'));
+  check('SPEC-V3: SM НЕ в основном (хрупкий скрыт из main)', !v3main.has('SM'));
+  check('SPEC-V3: availabilityMap(main).MC === 5', db.availabilityMap('main').get('MC') === 5, String(db.availabilityMap('main').get('MC')));
+  check('SPEC-V3: availabilityMap(unstable).SM === 2', db.availabilityMap('unstable').get('SM') === 2, String(db.availabilityMap('unstable').get('SM')));
+  check('SPEC-V3: availabilityMap(unstable) НЕ содержит MC', !db.availabilityMap('unstable').has('MC'));
+
+  // 10.3 §B: цена заказа по разделу (свежий юзер без free/bonus) + валидация «регион не в разделе»
+  const UV = 90777;
+  const qU = db.quoteOrder(UV, { SM: 1 }, 'unstable');
+  check('SPEC-V3: quoteOrder unstable {SM:1} stars=7 base=7', qU.stars === 7 && qU.base === 7, JSON.stringify(qU));
+  const qU2 = db.quoteOrder(UV, { SM: 2 }, 'unstable');
+  check('SPEC-V3: quoteOrder unstable {SM:2} totalCost=7+extra', qU2.totalCost === 7 + db.extraStars(), String(qU2.totalCost));
+  const qM = db.quoteOrder(UV, { MC: 1 }, 'main');
+  check('SPEC-V3: quoteOrder main {MC:1} stars=20 base=20', qM.stars === 20 && qM.base === 20, JSON.stringify(qM));
+  check('SPEC-V3: quoteOrder({SM:1},main) → Error (хрупкий не в основном)', throws2(() => db.quoteOrder(UV, { SM: 1 }, 'main')));
+  check('SPEC-V3: quoteOrder({MC:1},unstable) → Error (стабильный не в нестабильном)', throws2(() => db.quoteOrder(UV, { MC: 1 }, 'unstable')));
+
+  // 10.4 §B: reserveOrder unstable base=7; доставка из чёрного пула (list_type='black')
+  const rvU = db.reserveOrder(UV, { SM: 1 }, 'unstable');
+  check('SPEC-V3: reserveOrder unstable {SM:1} stars=7 base=7', rvU.stars === 7 && rvU.base === 7, JSON.stringify(rvU));
+  const ordU = db.createOrder({ userId: UV, regions: ['SM'], qty: { SM: 1 }, stars: rvU.stars, status: 'paid', days: 30, chargeId: 'X', listType: 'black' });
+  const ordURow = db.getOrderByToken(ordU.token);
+  check('SPEC-V3: unstable-заказ list_type=black (доставка из чёрного пула)', ordURow.list_type === 'black', String(ordURow.list_type));
+  const subU = subscription.buildSub(ordURow);
+  check('SPEC-V3: buildSub unstable-заказа отдал живые vless из чёрного пула', subU.lines.length >= 1 && subU.lines.every((l) => l.startsWith('vless://')), `lines=${subU.lines.length}`);
+  check('SPEC-V3: основной(20)/белый(50) прайс не тронут после unstable', db.priceStars() === 20 && db.priceStars('white') === 50);
+
+  // 10.5 §A: логгер действий — logAction пишет; actionsQuery фильтрует; activityStats считает
+  db.logAction({ userId: 424242, username: 'v3tester', isAdmin: false, kind: 'command', action: '/vpn', detail: 'DE,NL' });
+  db.logAction({ userId: 424242, username: 'v3tester', isAdmin: false, kind: 'callback', action: 'pay', detail: null });
+  db.logAction({ userId: config.ADMIN_IDS[0] || 927937870, username: 'boss', isAdmin: true, kind: 'command', action: '/admin', detail: null });
+  const byAction = db.actionsQuery({ action: '/vpn' });
+  check('SPEC-V3 log: actionsQuery(action:/vpn) находит запись', byAction.total >= 1 && byAction.rows.some((r) => r.action === '/vpn' && r.user_id === 424242), String(byAction.total));
+  const byUserId = db.actionsQuery({ user: '424242' });
+  check('SPEC-V3 log: actionsQuery(user:id) только этот user_id', byUserId.total >= 2 && byUserId.rows.every((r) => r.user_id === 424242), String(byUserId.total));
+  const byUsername = db.actionsQuery({ user: '@v3tester' });
+  check('SPEC-V3 log: actionsQuery(user:@username) находит', byUsername.total >= 2 && byUsername.rows.every((r) => /v3tester/i.test(r.username || '')), String(byUsername.total));
+  const adminsOnly = db.actionsQuery({ admin: true });
+  check('SPEC-V3 log: actionsQuery(admin:true) только is_admin=1', adminsOnly.rows.length >= 1 && adminsOnly.rows.every((r) => Number(r.is_admin) === 1));
+  check('SPEC-V3 log: actionsQuery limit клампится ≤200', db.actionsQuery({ limit: 9999 }).rows.length <= 200);
+  const actv = db.activityStats();
+  check('SPEC-V3 log: activityStats поля-числа', ['totalUsers', 'activeToday', 'active7d', 'actionsToday', 'admins'].every((k) => typeof actv[k] === 'number'), JSON.stringify(actv));
+  check('SPEC-V3 log: activityStats.actionsToday >= 3', actv.actionsToday >= 3, String(actv.actionsToday));
 }
 
 main()

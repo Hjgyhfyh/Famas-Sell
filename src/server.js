@@ -444,19 +444,23 @@ function createServer(botApi) {
   app.use(express.json({ limit: '64kb' }));
 
   /* GET /famas/api/regions — витрина: регионы, цена, срок, всего серверов.
-   * SPEC-SOURCES §4.4/§7: ?list=black|white (дефолт black) — витрина по категории пула.
-   * Вкладку white в UI добавим позже; здесь — только бэкенд-поддержка listType. */
+   * SPEC-V3 §B.4: ?list=main|unstable|white (дефолт main; 'black' = main для совместимости).
+   *   main     → основной каталог (чёрный пул, alive > UNSTABLE_MAX), цена 20;
+   *   unstable → нестабильные регионы (чёрный пул, alive 1..UNSTABLE_MAX), цена 7, флаг предупреждения;
+   *   white    → белые списки (белый пул), цена 50. */
   app.get('/famas/api/regions', function (req, res) {
-    const list = req.query && req.query.list === 'white' ? 'white' : 'black';
-    const regions = db.regionsSummary(list) || [];
+    const raw = req.query && req.query.list;
+    const section = raw === 'white' ? 'white' : raw === 'unstable' ? 'unstable' : 'main';
+    const regions = db.regionsSummary(section) || [];
     let total = 0;
     for (const r of regions) total += Number(r.count) || 0;
     const lr = inventory.lastRefresh || null;
     res.json({
       ok: true,
-      list, // из какого пула витрина (black|white)
+      list: section, // раздел витрины (main|unstable|white)
+      unstable: section === 'unstable', // SPEC-V3 §B.4: показать предупреждающую плашку на витрине
       regions, // каждый регион уже с popularity (regionsSummary, SPEC-QTY §3/§4)
-      price: db.priceStars(list), // SPEC-GROWTH2 §B: white → 50, black → 20
+      price: db.priceStars(section), // SPEC-V3 §B: main → 20, unstable → 7, white → 50
       extra: db.extraStars(), // доплата за доп. сервер (SPEC-QTY §6)
       subDays: db.subDays(),
       total,
@@ -473,9 +477,12 @@ function createServer(botApi) {
       return res.status(401).json({ ok: false, error: 'Авторизация не пройдена — открой магазин из Telegram' });
     }
 
-    // SPEC-GROWTH2 §B.3: раздел заказа — 'black' (дефолт, совместимость) | 'white' (премиум, цена 50).
-    // Влияет на base-цену (reserveOrder), пул валидации/выдачи и orders.list_type (buildSub по нему).
-    const list = body.list === 'white' ? 'white' : 'black';
+    // SPEC-V3 §B.3: раздел заказа — 'main' (дефолт; 'black' = main для совместимости) | 'unstable'
+    // (нестабильные, цена 7) | 'white' (премиум, цена 50). section влияет на base-цену и пул валидации
+    // (reserveOrder); listType — реальный пул ДОСТАВКИ и orders.list_type (buildSub по нему): main и
+    // unstable доставляются из чёрного пула (отличаются только ценой/предупреждением), white — из белого.
+    const section = body.list === 'white' ? 'white' : body.list === 'unstable' ? 'unstable' : 'main';
+    const listType = section === 'white' ? 'white' : 'black';
 
     // Тело заказа — три совместимых формата (SPEC-QTY §6):
     //   {items:[{iso,qty}]} (предпочтительно) | {qty:{iso:count}} | {regions:[iso]} (каждый qty=1).
@@ -540,7 +547,7 @@ function createServer(botApi) {
     // free при этом НЕ списывается (валидация до транзакции). q.stars/q.servers — итог.
     let q;
     try {
-      q = db.reserveOrder(auth.user.id, qtyInput, list); // SPEC-GROWTH2 §B: base/валидация по пулу list
+      q = db.reserveOrder(auth.user.id, qtyInput, section); // SPEC-V3 §B: base/валидация по разделу
     } catch (e) {
       return res.status(400).json({ ok: false, error: (e && e.message) || 'Некорректный заказ' });
     }
@@ -557,7 +564,7 @@ function createServer(botApi) {
         freeApplied: q.freeUsed,
         bonusApplied: q.bonusUsed,
         chargeId: 'FREE',
-        listType: list
+        listType: listType
       });
       if (!created || !created.id) {
         return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
@@ -579,7 +586,7 @@ function createServer(botApi) {
       return res.json({
         ok: true,
         free: true,
-        list, // SPEC-GROWTH2 §B: пул заказа (black|white)
+        list: section, // SPEC-V3 §B: раздел заказа (main|unstable|white)
         orderId: created.id,
         page: subscription.pageUrl(created.token),
         sub: subscription.subUrl(created.token),
@@ -600,7 +607,7 @@ function createServer(botApi) {
       days,
       freeApplied: q.freeUsed,
       bonusApplied: q.bonusUsed,
-      listType: list
+      listType: listType
     });
     if (!created || !created.id) {
       return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
@@ -648,7 +655,7 @@ function createServer(botApi) {
 
     res.json({
       ok: true,
-      list, // SPEC-GROWTH2 §B: пул заказа (black|white)
+      list: section, // SPEC-V3 §B: раздел заказа (main|unstable|white)
       invoiceLink: invoiceLink,
       orderId: created.id,
       stars: q.stars,
@@ -1070,6 +1077,60 @@ function createServer(botApi) {
 
     const orders = (result.rows || []).map((row) => mapAdminOrder(row, now, summaryByIso));
     res.json({ ok: true, total: result.total, orders: orders });
+  });
+
+  /* GET /famas/admin/api/log — журнал действий (SPEC-V3 §A.4): фильтры user/action/admin + пагинация.
+   * Только requireAdmin (initData + ADMIN_IDS). no-store (общий /famas/admin/api middleware). */
+  app.get('/famas/admin/api/log', function (req, res) {
+    const gate = requireAdmin(adminInitData(req));
+    if (!gate.ok) return denyAdmin(res);
+
+    let result;
+    try {
+      result = db.actionsQuery({
+        user: typeof req.query.user === 'string' ? req.query.user : '',
+        action: typeof req.query.action === 'string' ? req.query.action : '',
+        admin: req.query.admin === '1' || req.query.admin === 'true',
+        limit: req.query.limit, // db клампит (дефолт 50, макс 200)
+        offset: req.query.offset, // db клампит (дефолт 0)
+      });
+    } catch (e) {
+      logErr('admin/log', e);
+      return res.status(500).json({ ok: false, error: 'Не удалось получить журнал' });
+    }
+
+    const rows = (result.rows || []).map((r) => ({
+      id: r.id,
+      ts: r.ts,
+      userId: r.user_id,
+      username: r.username || null,
+      isAdmin: Number(r.is_admin) === 1,
+      kind: r.kind || null,
+      action: r.action || null,
+      detail: r.detail || null,
+    }));
+    res.json({ ok: true, total: result.total, rows: rows });
+  });
+
+  /* GET /famas/admin/api/activity — сводка активности (SPEC-V3 §A.4): плитки панели «Логи». */
+  app.get('/famas/admin/api/activity', function (req, res) {
+    const gate = requireAdmin(adminInitData(req));
+    if (!gate.ok) return denyAdmin(res);
+
+    let stats = { totalUsers: 0, activeToday: 0, active7d: 0, actionsToday: 0, admins: 0 };
+    try {
+      stats = db.activityStats();
+    } catch (e) {
+      logErr('admin/activity', e);
+    }
+    res.json({
+      ok: true,
+      totalUsers: stats.totalUsers,
+      activeToday: stats.activeToday,
+      active7d: stats.active7d,
+      actionsToday: stats.actionsToday,
+      admins: stats.admins,
+    });
   });
 
   /* GET /famas/admin/avatar/:userId — аватар покупателя, ПРОКСИ через бота (токен не светим). */

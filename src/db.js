@@ -57,6 +57,32 @@ function minAliveToSell() {
   return Number.isFinite(n) && n >= 1 ? n : 2;
 }
 
+/** SPEC-V3 §B: верхняя граница «живых» серверов, при которой регион считается нестабильным (1..MAX). */
+function unstableMaxAlive() {
+  const n = Math.floor(Number(config.UNSTABLE_MAX_ALIVE));
+  return Number.isFinite(n) && n >= 1 ? n : 3;
+}
+
+/**
+ * SPEC-V3 §B: раздел каталога (section) → {pool, having} для выборок regionsSummary/availabilityMap.
+ *   main | black | undefined/прочее → чёрный пул, регионы с alive > UNSTABLE_MAX (стабильные, цена 20).
+ *     Заменяет прежний MIN_ALIVE_TO_SELL-гейт main: хрупкие регионы (1..MAX живых) больше не
+ *     скрываются, а уходят в раздел unstable.
+ *   unstable → чёрный пул, регионы с alive в диапазоне 1..UNSTABLE_MAX (хрупкие, цена 7, предупреждение).
+ *   white    → белый пул, прежний гейт MIN_ALIVE_TO_SELL (не тронут — премиум-раздел 50⭐).
+ * pool — реальный list_type для выдачи/доставки: main+unstable доставляются из чёрного пула, white — из
+ * белого. Число в HAVING инлайнится безопасно (только целые из config, валидированы Math.floor).
+ */
+function sectionSpec(section) {
+  if (section === 'white') {
+    return { pool: 'white', having: `HAVING COUNT(*) >= ${minAliveToSell()}` };
+  }
+  if (section === 'unstable') {
+    return { pool: 'black', having: `HAVING COUNT(*) BETWEEN 1 AND ${unstableMaxAlive()}` };
+  }
+  return { pool: 'black', having: `HAVING COUNT(*) > ${unstableMaxAlive()}` };
+}
+
 function stmt(sql) {
   if (!db) throw new Error('db.init() ещё не вызван');
   let s = stmtCache.get(sql);
@@ -168,6 +194,17 @@ function migrate() {
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_configs_region2 ON configs(list_type, country_iso, active, alive)'
   );
+
+  // SPEC-V3 §A.1: журнал ВСЕХ действий в боте (для расследований/контроля админов/активности).
+  // Идемпотентно (IF NOT EXISTS): на существующей БД ничего не ломает. Индексы под фильтры
+  // «по юзеру + время» и «по действию + время» (лента сортируется ts DESC).
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS actions(
+       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, user_id INTEGER,
+       username TEXT, is_admin INTEGER DEFAULT 0, kind TEXT, action TEXT, detail TEXT)`
+  );
+  db.exec('CREATE INDEX IF NOT EXISTS idx_actions_user ON actions(user_id, ts)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_actions_action ON actions(action, ts)');
 
   // Разовая collapse+rehash-миграция старых строк на новый hash=sha256(host:port) (SPEC-SOURCES §3.4).
   migrateRehashConfigs();
@@ -645,16 +682,17 @@ function normalizeQtyLenient(input) {
  * «Продаваемый» сервер = active=1 AND alive=1, поэтому потолок покупки — число живых
  * (совпадает с count из regionsSummary, чтобы клиент не мог заказать больше, чем выдадим).
  */
-function availabilityMap(listType) {
-  const lt = listType === 'white' ? 'white' : 'black';
+function availabilityMap(section) {
+  const spec = sectionSpec(section); // SPEC-V3 §B: пул + HAVING по разделу (main/unstable/white)
   const map = new Map();
-  // SPEC-STABILITY2 §3: + COUNTRY_BLACKLIST (не продаём ложные страны) + HAVING MIN_ALIVE_TO_SELL
-  // (хрупкий регион с 1 живым сервером не продаётся — потолок покупки = живые видимого региона).
+  // SPEC-STABILITY2 §3: + COUNTRY_BLACKLIST (не продаём ложные страны). HAVING зависит от раздела:
+  // main → alive > UNSTABLE_MAX; unstable → alive 1..UNSTABLE_MAX; white → >= MIN_ALIVE_TO_SELL.
+  // Потолок покупки = живые видимого региона (клиент не закажет больше, чем выдадим).
   const rows = stmt(
     `SELECT country_iso AS iso, COUNT(*) AS count FROM configs
       WHERE active=1 AND alive=1 AND list_type=? AND country_iso!='XX'${blSql('country_iso')}
-      GROUP BY country_iso HAVING COUNT(*) >= ${minAliveToSell()}`
-  ).all(lt);
+      GROUP BY country_iso ${spec.having}`
+  ).all(spec.pool);
   for (const r of rows) map.set(r.iso, Number(r.count) || 0);
   return map;
 }
@@ -662,17 +700,17 @@ function availabilityMap(listType) {
 /**
  * Чистый расчёт стоимости заказа по qtyMap (без учёта free) с ВАЛИДАЦИЕЙ.
  * Бросает Error при некорректном ISO/count или count>available.
- * SPEC-GROWTH2 §B: listType='white' → base=priceStars('white')(=50), валидация по белому пулу
- * availabilityMap('white'); иначе (дефолт) — чёрный пул/прайс как раньше. extra — общий (§B: MVP).
+ * SPEC-V3 §B: section — раздел каталога ('main'|'unstable'|'white'; 'black'/undefined = main):
+ * base=priceStars(section) (main 20 / unstable 7 / white 50), валидация по availabilityMap(section)
+ * (соответствующий пул + HAVING раздела). extra — общий для всех разделов (§B: MVP).
  * -> {map, base, extra, totalCost, servers, regionsCount}
  *   totalCost = Σ по регионам (base + extra*(count-1)); servers = Σcount.
  */
-function computeQtyCost(input, listType) {
-  const lt = listType === 'white' ? 'white' : 'black';
+function computeQtyCost(input, section) {
   const map = normalizeQtyStrict(input); // бросит на битом вводе/пустоте
-  const base = priceStars(lt);
+  const base = priceStars(section);
   const extra = extraStars();
-  const avail = availabilityMap(lt);
+  const avail = availabilityMap(section);
   let totalCost = 0;
   let servers = 0;
   for (const [iso, count] of map) {
@@ -689,16 +727,17 @@ function computeQtyCost(input, listType) {
  * Единый ЧИСТЫЙ расчёт цены заказа со скидкой (SPEC-QTY §3, SPEC-FREE §7b, SPEC-REFERRAL §4) —
  * для отображения/превью (бот shopView, mini app). НИЧЕГО не списывает.
  * Порядок скидок: сначала free-регионы гасят base, затем бонус-звёзды гасят остаток.
- * SPEC-GROWTH2 §B: listType='white' → base=50 и валидация по белому пулу (иначе чёрный, дефолт).
- * quoteOrder(userId, qtyMap, listType) -> {base, extra, totalCost, regionsCount, servers,
+ * SPEC-V3 §B: section — раздел ('main'|'unstable'|'white'; 'black'/undefined = main) → base
+ * (main 20 / unstable 7 / white 50) и валидация по availabilityMap(section).
+ * quoteOrder(userId, qtyMap, section) -> {base, extra, totalCost, regionsCount, servers,
  *   freeAvail, freeUsed, discount(=discountFree), discountFree, bonusAvail, bonusUsed, stars, fullyFree}
  *   qtyMap = {iso:count} | массив ISO (каждый count=1).
  *   freeUsed = min(getFree, regionsCount); discountFree = freeUsed*base;
  *   afterFree = max(0, totalCost - discountFree); bonusUsed = min(getBonus, afterFree);
  *   stars = afterFree - bonusUsed; fullyFree = stars===0 && regionsCount>0.
  */
-function quoteOrder(userId, qtyMap, listType) {
-  const c = computeQtyCost(qtyMap, listType); // валидация (бросит Error при нарушении)
+function quoteOrder(userId, qtyMap, section) {
+  const c = computeQtyCost(qtyMap, section); // валидация (бросит Error при нарушении)
   const freeAvail = getFree(userId);
   const freeUsed = Math.min(freeAvail, c.regionsCount);
   const discountFree = freeUsed * c.base;
@@ -732,12 +771,15 @@ function quoteOrder(userId, qtyMap, listType) {
  * Списывает И free (consumeFree) И бонус-звёзды (consumeBonus) по фактически доступному,
  * пересчитывает stars по реально применённому. Порядок скидок: free гасит base, затем бонус —
  * остаток (SPEC-REFERRAL §4). Возвращает то же, что quoteOrder, но без *Avail-полей.
- * SPEC-GROWTH2 §B: listType='white' → base=50 и валидация по белому пулу (иначе чёрный, дефолт).
- * reserveOrder(userId, qtyMap, listType) -> {base, extra, totalCost, regionsCount, servers,
+ * SPEC-V3 §B: section — раздел ('main'|'unstable'|'white'; 'black'/undefined = main) → base
+ * (main 20 / unstable 7 / white 50) и валидация по availabilityMap(section). ДОСТАВКА заказа —
+ * из пула section (main+unstable → чёрный, white → белый): пул выставляет вызывающий в createOrder
+ * (orders.list_type), reserveOrder только считает цену/скидки.
+ * reserveOrder(userId, qtyMap, section) -> {base, extra, totalCost, regionsCount, servers,
  *   freeUsed, discount(=discountFree), discountFree, bonusUsed, stars, fullyFree}
  */
-function reserveOrder(userId, qtyMap, listType) {
-  const c = computeQtyCost(qtyMap, listType); // валидация ДО транзакции (бросит → free/бонус не тронуты)
+function reserveOrder(userId, qtyMap, section) {
+  const c = computeQtyCost(qtyMap, section); // валидация ДО транзакции (бросит → free/бонус не тронуты)
   const tx = db.transaction(() => {
     const freeUsed = consumeFree(userId, Math.min(getFree(userId), c.regionsCount));
     const discountFree = freeUsed * c.base;
@@ -778,13 +820,18 @@ function setSetting(key, value) {
 }
 
 /**
- * Цена за 1-й сервер региона (SPEC-GROWTH2 §B). listType='white' → белый прайс (settings
- * price_stars_white, дефолт config.WHITE_PRICE_STARS=50); иначе (дефолт, совместимость) —
- * чёрный прайс (settings price_stars, дефолт DEFAULT_PRICE_STARS=20). priceStars() без аргумента —
- * ровно как раньше (black), поэтому все существующие вызовы не меняются.
+ * Цена за 1-й сервер региона по разделу (SPEC-V3 §B). section='unstable' → нестабильный прайс
+ * (settings price_stars_unstable, дефолт config.UNSTABLE_PRICE_STARS=7); 'white' → белый прайс
+ * (settings price_stars_white, дефолт WHITE_PRICE_STARS=50); иначе (main/black/undefined) — основной
+ * прайс (settings price_stars, дефолт DEFAULT_PRICE_STARS=20). priceStars() без аргумента — ровно как
+ * раньше (основной/black), поэтому все существующие вызовы не меняются.
  */
-function priceStars(listType) {
-  if (listType === 'white') {
+function priceStars(section) {
+  if (section === 'unstable') {
+    const u = parseInt(getSetting('price_stars_unstable', config.UNSTABLE_PRICE_STARS), 10);
+    return Number.isFinite(u) && u > 0 ? u : config.UNSTABLE_PRICE_STARS;
+  }
+  if (section === 'white') {
     const w = parseInt(getSetting('price_stars_white', config.WHITE_PRICE_STARS), 10);
     return Number.isFinite(w) && w > 0 ? w : config.WHITE_PRICE_STARS;
   }
@@ -928,21 +975,23 @@ function regionPopularity() {
 }
 
 /**
- * сводка активных регионов (SPEC-QTY §3): [{iso,name,nameRu,flag,count,popularity}],
+ * сводка активных регионов раздела (SPEC-QTY §3 + SPEC-V3 §B): [{iso,name,nameRu,flag,count,popularity}],
  * порядок — по nameRu (канон SPEC §3; сортировки витрины делают бот/mini app поверх).
+ * section: 'main'|'black'|undefined → основной (чёрный пул, alive > UNSTABLE_MAX); 'unstable' → чёрный
+ * пул, alive 1..UNSTABLE_MAX (хрупкие); 'white' → белый пул (гейт MIN_ALIVE_TO_SELL, не тронут).
  */
-function regionsSummary(listType) {
-  const lt = listType === 'white' ? 'white' : 'black';
+function regionsSummary(section) {
+  const spec = sectionSpec(section);
   const pop = regionPopularity();
-  // SPEC-QUALITY §3: регион считаем по живым серверам (active=1 AND alive=1);
-  // регион с 0 живых не показывается и не продаётся. SPEC-SOURCES §4.3: с учётом list_type.
-  // SPEC-STABILITY2 §3: + COUNTRY_BLACKLIST (ложные страны не показываем) + HAVING MIN_ALIVE_TO_SELL
-  // (хрупкие регионы с <MIN живых скрыты — единая точка отказа не продаётся).
+  // SPEC-QUALITY §3: регион считаем по живым серверам (active=1 AND alive=1); регион с 0 живых не
+  // показывается. SPEC-SOURCES §4.3: с учётом list_type. SPEC-STABILITY2 §3: + COUNTRY_BLACKLIST.
+  // SPEC-V3 §B: HAVING зависит от раздела (main → alive>MAX; unstable → 1..MAX; white → >=MIN_ALIVE) —
+  // хрупкие регионы больше не скрыты, а вынесены в отдельный раздел «нестабильные».
   const rows = stmt(
     `SELECT country_iso AS iso, MAX(country_name) AS name, MAX(flag) AS flag, COUNT(*) AS count
      FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso!='XX'${blSql('country_iso')}
-     GROUP BY country_iso HAVING COUNT(*) >= ${minAliveToSell()}`
-  ).all(lt);
+     GROUP BY country_iso ${spec.having}`
+  ).all(spec.pool);
   return rows
     .filter((r) => r.count > 0)
     .map((r) => ({
@@ -1593,6 +1642,112 @@ function statsSummary() {
   return { users, ordersPaid, revenueStars, activeConfigs, regionsCount, salesToday };
 }
 
+/* ─────────────── логгер действий (SPEC-V3 §A) ─────────────── */
+
+/**
+ * SPEC-V3 §A.2: быстрая запись одного действия в журнал actions. Всё в try/catch — логирование
+ * НИКОГДА не роняет бота/сервер. rec = {userId, username, isAdmin, kind, action, detail}. detail —
+ * произвольная строка (это хранилище, эскейп не нужен); режем до 500 симв на всякий случай.
+ */
+function logAction(rec) {
+  try {
+    const r = rec || {};
+    const uid = Number(r.userId);
+    stmt(
+      `INSERT INTO actions(ts, user_id, username, is_admin, kind, action, detail)
+       VALUES(?,?,?,?,?,?,?)`
+    ).run(
+      now(),
+      Number.isFinite(uid) ? uid : null,
+      r.username != null ? String(r.username) : null,
+      r.isAdmin ? 1 : 0,
+      r.kind != null ? String(r.kind) : null,
+      r.action != null ? String(r.action) : null,
+      r.detail != null ? String(r.detail).slice(0, 500) : null
+    );
+  } catch (e) {
+    // журнал никогда не роняет работу
+  }
+}
+
+/**
+ * SPEC-V3 §A.2: выборка журнала действий с фильтрами (для админ-панели «Логи»).
+ * actionsQuery({user, action, admin, limit, offset}) -> {total, rows}.
+ *   user  — по user_id (если число) ИЛИ username LIKE (ведущий '@' игнорируется);
+ *   action— точное совпадение action ('/start', 'pay', 'r:DE', 'text', …);
+ *   admin — только действия админов (is_admin=1);
+ *   сорт ts DESC (свежие сверху), limit≤200 (дефолт 50), offset≥0. total — отдельный COUNT.
+ */
+function actionsQuery(opts) {
+  const o = opts || {};
+  let limit = Math.floor(Number(o.limit));
+  if (!Number.isFinite(limit) || limit <= 0) limit = 50;
+  if (limit > 200) limit = 200;
+  let offset = Math.floor(Number(o.offset));
+  if (!Number.isFinite(offset) || offset < 0) offset = 0;
+
+  const where = [];
+  const params = [];
+  let user = String(o.user == null ? '' : o.user).trim();
+  if (user.startsWith('@')) user = user.slice(1);
+  if (user) {
+    const like = '%' + user.replace(/[\\%_]/g, '\\$&') + '%';
+    if (/^\d+$/.test(user)) {
+      where.push(`(user_id = ? OR username LIKE ? ESCAPE '\\')`);
+      params.push(Number(user), like);
+    } else {
+      where.push(`username LIKE ? ESCAPE '\\'`);
+      params.push(like);
+    }
+  }
+  const action = String(o.action == null ? '' : o.action).trim();
+  if (action) {
+    where.push('action = ?');
+    params.push(action);
+  }
+  if (o.admin) where.push('is_admin = 1');
+  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+  const total = stmt(`SELECT COUNT(*) AS c FROM actions ${whereSql}`).get(...params).c;
+  const rows = stmt(
+    `SELECT id, ts, user_id, username, is_admin, kind, action, detail
+       FROM actions ${whereSql}
+      ORDER BY ts DESC, id DESC
+      LIMIT ? OFFSET ?`
+  ).all(...params, limit, offset);
+  return { total: Number(total) || 0, rows };
+}
+
+/**
+ * SPEC-V3 §A.2: сводка активности для плиток панели.
+ * activityStats() -> {totalUsers, activeToday, active7d, actionsToday, admins}.
+ *   totalUsers   — всего пользователей (COUNT users);
+ *   activeToday  — DISTINCT user_id из actions за текущие МСК-сутки;
+ *   active7d     — DISTINCT user_id из actions за последние 7 суток;
+ *   actionsToday — всего действий за МСК-сутки;
+ *   admins       — сколько админов (users.is_admin=1).
+ */
+function activityStats() {
+  const nowS = now();
+  const mskShift = 3 * 3600;
+  const mskMidnight = Math.floor((nowS + mskShift) / 86400) * 86400 - mskShift; // как в statsSummary
+  const sevenAgo = nowS - 7 * 86400;
+  const num = (sql, ...p) => {
+    try {
+      return Number(stmt(sql).get(...p).c) || 0;
+    } catch (e) {
+      return 0;
+    }
+  };
+  return {
+    totalUsers: num('SELECT COUNT(*) AS c FROM users'),
+    activeToday: num('SELECT COUNT(DISTINCT user_id) AS c FROM actions WHERE ts >= ?', mskMidnight),
+    active7d: num('SELECT COUNT(DISTINCT user_id) AS c FROM actions WHERE ts >= ?', sevenAgo),
+    actionsToday: num('SELECT COUNT(*) AS c FROM actions WHERE ts >= ?', mskMidnight),
+    admins: num('SELECT COUNT(*) AS c FROM users WHERE is_admin=1'),
+  };
+}
+
 /* ─────────────── админка «кто что купил» (SPEC-ADMIN §3) ─────────────── */
 
 /**
@@ -1794,6 +1949,9 @@ module.exports = {
   setMerged,
   getUserByMergedToken,
   statsSummary,
+  logAction,
+  actionsQuery,
+  activityStats,
   adminSummary,
   adminUserExists,
   ordersForAdmin,
