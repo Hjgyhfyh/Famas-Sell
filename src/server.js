@@ -456,7 +456,7 @@ function createServer(botApi) {
       ok: true,
       list, // из какого пула витрина (black|white)
       regions, // каждый регион уже с popularity (regionsSummary, SPEC-QTY §3/§4)
-      price: db.priceStars(),
+      price: db.priceStars(list), // SPEC-GROWTH2 §B: white → 50, black → 20
       extra: db.extraStars(), // доплата за доп. сервер (SPEC-QTY §6)
       subDays: db.subDays(),
       total,
@@ -472,6 +472,10 @@ function createServer(botApi) {
     if (!auth) {
       return res.status(401).json({ ok: false, error: 'Авторизация не пройдена — открой магазин из Telegram' });
     }
+
+    // SPEC-GROWTH2 §B.3: раздел заказа — 'black' (дефолт, совместимость) | 'white' (премиум, цена 50).
+    // Влияет на base-цену (reserveOrder), пул валидации/выдачи и orders.list_type (buildSub по нему).
+    const list = body.list === 'white' ? 'white' : 'black';
 
     // Тело заказа — три совместимых формата (SPEC-QTY §6):
     //   {items:[{iso,qty}]} (предпочтительно) | {qty:{iso:count}} | {regions:[iso]} (каждый qty=1).
@@ -536,7 +540,7 @@ function createServer(botApi) {
     // free при этом НЕ списывается (валидация до транзакции). q.stars/q.servers — итог.
     let q;
     try {
-      q = db.reserveOrder(auth.user.id, qtyInput);
+      q = db.reserveOrder(auth.user.id, qtyInput, list); // SPEC-GROWTH2 §B: base/валидация по пулу list
     } catch (e) {
       return res.status(400).json({ ok: false, error: (e && e.message) || 'Некорректный заказ' });
     }
@@ -552,7 +556,8 @@ function createServer(botApi) {
         days,
         freeApplied: q.freeUsed,
         bonusApplied: q.bonusUsed,
-        chargeId: 'FREE'
+        chargeId: 'FREE',
+        listType: list
       });
       if (!created || !created.id) {
         return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
@@ -574,6 +579,7 @@ function createServer(botApi) {
       return res.json({
         ok: true,
         free: true,
+        list, // SPEC-GROWTH2 §B: пул заказа (black|white)
         orderId: created.id,
         page: subscription.pageUrl(created.token),
         sub: subscription.subUrl(created.token),
@@ -593,7 +599,8 @@ function createServer(botApi) {
       status: 'pending',
       days,
       freeApplied: q.freeUsed,
-      bonusApplied: q.bonusUsed
+      bonusApplied: q.bonusUsed,
+      listType: list
     });
     if (!created || !created.id) {
       return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
@@ -641,6 +648,7 @@ function createServer(botApi) {
 
     res.json({
       ok: true,
+      list, // SPEC-GROWTH2 §B: пул заказа (black|white)
       invoiceLink: invoiceLink,
       orderId: created.id,
       stars: q.stars,

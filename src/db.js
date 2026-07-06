@@ -128,6 +128,12 @@ function migrate() {
   if (!columnExists('orders', 'bonus_applied')) {
     db.exec('ALTER TABLE orders ADD COLUMN bonus_applied INTEGER DEFAULT 0');
   }
+  // SPEC-GROWTH2 §A.2: анти-фрод рефералки. ref_credited — начислен ли бонус пригласившему за ЭТОГО
+  // приглашённого (0 = приглашённый ещё не совершил платную покупку). Гейт идемпотентности
+  // creditReferralOnPurchase. columnExists-guard идемпотентен, на существующей БД не ломает.
+  if (!columnExists('users', 'ref_credited')) {
+    db.exec('ALTER TABLE users ADD COLUMN ref_credited INTEGER DEFAULT 0');
+  }
 
   // SPEC-MERGE §2: объединённый ключ юзера. merged — включён ли режим объединения (0/1);
   // merged_token — стабильный токен объединённой подписки (генерится один раз при первом
@@ -404,46 +410,68 @@ function consumeBonus(userId, n) {
   return take;
 }
 
-/** Реф-сводка юзера: {count:ref_count, bonus:bonus_stars, referredBy}. */
+/**
+ * Реф-сводка юзера: {count:ref_count, bonus:bonus_stars, referredBy, pending}.
+ * count — зачтённые (реально купившие) приглашённые; SPEC-GROWTH2 §A.3: pending — приглашённые,
+ * что ещё НЕ купили (referred_by=userId и ref_credited=0). «Приглашено (купили): count · ждут: pending».
+ */
 function refInfo(userId) {
-  const row = stmt('SELECT ref_count, bonus_stars, referred_by FROM users WHERE id=?').get(
-    Number(userId)
-  );
+  const id = Number(userId);
+  const row = stmt('SELECT ref_count, bonus_stars, referred_by FROM users WHERE id=?').get(id);
+  let pending = 0;
+  try {
+    const pr = stmt(
+      'SELECT COUNT(*) AS c FROM users WHERE referred_by=? AND COALESCE(ref_credited,0)=0'
+    ).get(id);
+    pending = pr ? Number(pr.c) || 0 : 0;
+  } catch (e) {
+    pending = 0;
+  }
   return {
     count: row ? Number(row.ref_count) || 0 : 0,
     bonus: row ? Number(row.bonus_stars) || 0 : 0,
     referredBy: row && row.referred_by != null ? Number(row.referred_by) : null,
+    pending,
   };
 }
 
 /**
- * Атрибутировать приглашение (SPEC-REFERRAL §3). Всё в ОДНОЙ транзакции.
- * credited=true (пригласившему +REF_BONUS_STARS бонуса, ref_count++, newUser.referred_by=inviter)
- * ТОЛЬКО если: inviterId!=newUserId; оба id валидны; у newUser ещё нет referred_by; newUser «новый»
- * (нет оплаченных/gift заказов). Иначе {credited:false, reason:'self'|'already'|'not_new'|'no_inviter'}.
+ * Атрибутировать приглашение (SPEC-REFERRAL §3 + SPEC-GROWTH2 §A.3). Всё в ОДНОЙ транзакции.
+ * ЛИНКОВКА (newUser.referred_by=inviter) проходит ТОЛЬКО если: inviterId!=newUserId; оба id валидны;
+ * у newUser ещё нет referred_by; newUser «новый» (нет оплаченных/gift заказов).
+ *
+ * SPEC-GROWTH2 §A.3 (анти-фрод): при config.REF_REQUIRE_PURCHASE=1 (дефолт) бонус НЕ начисляется здесь —
+ * только ставится referred_by; бонус начислит creditReferralOnPurchase при первой ПЛАТНОЙ покупке
+ * приглашённого. При REF_REQUIRE_PURCHASE=0 — старое поведение (бонус пригласившему сразу).
+ *
+ * Возврат {credited:bool, linked:bool, reason}:
+ *   - линковка удалась, бонус НЕ начислен (require_purchase=1): {credited:false, linked:true, reason:'linked'}
+ *   - линковка + бонус сразу (require_purchase=0):              {credited:true,  linked:true, reason:'ok'}
+ *   - отказ: {credited:false, linked:false, reason:'self'|'already'|'not_new'|'no_inviter'}.
  */
 function attributeReferral(newUserId, inviterId) {
   const newId = Number(newUserId);
   const invId = Number(inviterId);
   if (!Number.isInteger(newId) || newId <= 0 || !Number.isInteger(invId) || invId <= 0) {
-    return { credited: false, reason: 'no_inviter' };
+    return { credited: false, linked: false, reason: 'no_inviter' };
   }
   if (invId === newId) {
-    return { credited: false, reason: 'self' };
+    return { credited: false, linked: false, reason: 'self' };
   }
+  const requirePurchase = !!config.REF_REQUIRE_PURCHASE;
   const bonus = Math.max(0, Math.floor(Number(config.REF_BONUS_STARS) || 0));
   const tx = db.transaction(() => {
     // уже реферился? (referred_by проставлен один раз) → повтор не проходит
     const nu = stmt('SELECT referred_by FROM users WHERE id=?').get(newId);
     if (nu && nu.referred_by != null) {
-      return { credited: false, reason: 'already' };
+      return { credited: false, linked: false, reason: 'already' };
     }
     // «новый» = нет оплаченных/gift заказов (существующего покупателя не приглашаем)
     const hasOrders = stmt(
       `SELECT 1 AS x FROM orders WHERE user_id=? AND status IN ('paid','gift') LIMIT 1`
     ).get(newId);
     if (hasOrders) {
-      return { credited: false, reason: 'not_new' };
+      return { credited: false, linked: false, reason: 'not_new' };
     }
     const t = now();
     // строка пригласившего — создать при отсутствии (не трогаем существующие поля)
@@ -456,11 +484,93 @@ function attributeReferral(newUserId, inviterId) {
       `INSERT INTO users(id, referred_by, first_seen, last_seen) VALUES(?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET referred_by=excluded.referred_by`
     ).run(newId, invId, t, t);
-    // начислить пригласившему бонус и счётчик приглашённых
+    if (requirePurchase) {
+      // Анти-фрод: только линковка, бонус позже (при платной покупке приглашённого). ref_count и
+      // bonus_stars НЕ трогаем — иначе боты-фейкстарты снова накрутили бы счётчик/бонус.
+      return { credited: false, linked: true, reason: 'linked' };
+    }
+    // Старое поведение (REF_REQUIRE_PURCHASE=0): начислить пригласившему бонус и счётчик сразу.
     stmt(
       'UPDATE users SET bonus_stars = COALESCE(bonus_stars,0) + ?, ref_count = COALESCE(ref_count,0) + 1 WHERE id=?'
     ).run(bonus, invId);
-    return { credited: true, reason: 'ok' };
+    return { credited: true, linked: true, reason: 'ok' };
+  });
+  return tx();
+}
+
+/**
+ * SPEC-GROWTH2 §A.3: начислить реф-бонус пригласившему при ПЕРВОЙ ПЛАТНОЙ покупке приглашённого.
+ * Звать в successful_payment (реальная оплата ⭐/крипта), НЕ на free/gift. Всё в ОДНОЙ транзакции,
+ * идемпотентно (гейт ref_credited).
+ * creditReferralOnPurchase(buyerUserId) -> {credited:bool, inviter?, reason}:
+ *   - у buyer нет referred_by                      → {credited:false, reason:'no_ref'}
+ *   - уже зачтён (ref_credited=1)                   → {credited:false, reason:'already'}
+ *   - битый referred_by (self/невалид)             → {credited:false, reason:'bad_inviter'} (помечаем зачтённым)
+ *   - пригласивший исчерпал REF_DAILY_CAP за МСК-сутки (по событиям ref_credit) →
+ *                                                     {credited:false, reason:'cap', inviter} (НЕ помечаем — зачтётся позже)
+ *   - иначе: inviter.bonus_stars += REF_BONUS_STARS, inviter.ref_count++, buyer.ref_credited=1,
+ *            logEvent('ref_credit',{inviter,buyer}) → {credited:true, inviter, reason:'ok'}.
+ */
+function creditReferralOnPurchase(buyerUserId) {
+  const buyerId = Number(buyerUserId);
+  if (!Number.isInteger(buyerId) || buyerId <= 0) {
+    return { credited: false, reason: 'no_buyer' };
+  }
+  const bonus = Math.max(0, Math.floor(Number(config.REF_BONUS_STARS) || 0));
+  let cap = Math.floor(Number(config.REF_DAILY_CAP));
+  if (!Number.isFinite(cap) || cap < 0) cap = 20;
+
+  const nowS = now();
+  // Начало текущих МСК-суток (UTC+3, без переходов) — как в statsSummary.
+  const mskShift = 3 * 3600;
+  const mskMidnight = Math.floor((nowS + mskShift) / 86400) * 86400 - mskShift;
+
+  const tx = db.transaction(() => {
+    const buyer = stmt('SELECT referred_by, ref_credited FROM users WHERE id=?').get(buyerId);
+    if (!buyer || buyer.referred_by == null) {
+      return { credited: false, reason: 'no_ref' };
+    }
+    if (Number(buyer.ref_credited) === 1) {
+      return { credited: false, reason: 'already' };
+    }
+    const invId = Number(buyer.referred_by);
+    if (!Number.isInteger(invId) || invId <= 0 || invId === buyerId) {
+      // битая ссылка — помечаем как обработанную, чтобы не пытаться каждую покупку
+      stmt('UPDATE users SET ref_credited=1 WHERE id=?').run(buyerId);
+      return { credited: false, reason: 'bad_inviter' };
+    }
+    // Суточный лимит зачтённых рефералов пригласившего (по событиям ref_credit за МСК-сутки).
+    let creditedToday = 0;
+    try {
+      const rows = stmt(
+        `SELECT data FROM events WHERE type='ref_credit' AND ts >= ?`
+      ).all(mskMidnight);
+      for (const r of rows) {
+        try {
+          const d = JSON.parse(r.data || '{}');
+          if (Number(d.inviter) === invId) creditedToday++;
+        } catch (e) {
+          /* битую запись журнала пропускаем */
+        }
+      }
+    } catch (e) {
+      creditedToday = 0;
+    }
+    if (cap > 0 && creditedToday >= cap) {
+      // Лимит на сегодня исчерпан: НЕ начисляем и НЕ помечаем ref_credited — зачтётся при следующей
+      // покупке приглашённого в другие сутки (гейт остаётся открытым).
+      return { credited: false, reason: 'cap', inviter: invId };
+    }
+    // Начислить пригласившему бонус + счётчик, пометить приглашённого зачтённым, записать событие.
+    stmt(
+      'INSERT INTO users(id, first_seen, last_seen) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING'
+    ).run(invId, nowS, nowS);
+    stmt(
+      'UPDATE users SET bonus_stars = COALESCE(bonus_stars,0) + ?, ref_count = COALESCE(ref_count,0) + 1 WHERE id=?'
+    ).run(bonus, invId);
+    stmt('UPDATE users SET ref_credited=1 WHERE id=?').run(buyerId);
+    logEvent('ref_credit', { inviter: invId, buyer: buyerId });
+    return { credited: true, reason: 'ok', inviter: invId };
   });
   return tx();
 }
@@ -552,14 +662,17 @@ function availabilityMap(listType) {
 /**
  * Чистый расчёт стоимости заказа по qtyMap (без учёта free) с ВАЛИДАЦИЕЙ.
  * Бросает Error при некорректном ISO/count или count>available.
+ * SPEC-GROWTH2 §B: listType='white' → base=priceStars('white')(=50), валидация по белому пулу
+ * availabilityMap('white'); иначе (дефолт) — чёрный пул/прайс как раньше. extra — общий (§B: MVP).
  * -> {map, base, extra, totalCost, servers, regionsCount}
  *   totalCost = Σ по регионам (base + extra*(count-1)); servers = Σcount.
  */
-function computeQtyCost(input) {
+function computeQtyCost(input, listType) {
+  const lt = listType === 'white' ? 'white' : 'black';
   const map = normalizeQtyStrict(input); // бросит на битом вводе/пустоте
-  const base = priceStars();
+  const base = priceStars(lt);
   const extra = extraStars();
-  const avail = availabilityMap();
+  const avail = availabilityMap(lt);
   let totalCost = 0;
   let servers = 0;
   for (const [iso, count] of map) {
@@ -576,15 +689,16 @@ function computeQtyCost(input) {
  * Единый ЧИСТЫЙ расчёт цены заказа со скидкой (SPEC-QTY §3, SPEC-FREE §7b, SPEC-REFERRAL §4) —
  * для отображения/превью (бот shopView, mini app). НИЧЕГО не списывает.
  * Порядок скидок: сначала free-регионы гасят base, затем бонус-звёзды гасят остаток.
- * quoteOrder(userId, qtyMap) -> {base, extra, totalCost, regionsCount, servers,
+ * SPEC-GROWTH2 §B: listType='white' → base=50 и валидация по белому пулу (иначе чёрный, дефолт).
+ * quoteOrder(userId, qtyMap, listType) -> {base, extra, totalCost, regionsCount, servers,
  *   freeAvail, freeUsed, discount(=discountFree), discountFree, bonusAvail, bonusUsed, stars, fullyFree}
  *   qtyMap = {iso:count} | массив ISO (каждый count=1).
  *   freeUsed = min(getFree, regionsCount); discountFree = freeUsed*base;
  *   afterFree = max(0, totalCost - discountFree); bonusUsed = min(getBonus, afterFree);
  *   stars = afterFree - bonusUsed; fullyFree = stars===0 && regionsCount>0.
  */
-function quoteOrder(userId, qtyMap) {
-  const c = computeQtyCost(qtyMap); // валидация (бросит Error при нарушении)
+function quoteOrder(userId, qtyMap, listType) {
+  const c = computeQtyCost(qtyMap, listType); // валидация (бросит Error при нарушении)
   const freeAvail = getFree(userId);
   const freeUsed = Math.min(freeAvail, c.regionsCount);
   const discountFree = freeUsed * c.base;
@@ -618,11 +732,12 @@ function quoteOrder(userId, qtyMap) {
  * Списывает И free (consumeFree) И бонус-звёзды (consumeBonus) по фактически доступному,
  * пересчитывает stars по реально применённому. Порядок скидок: free гасит base, затем бонус —
  * остаток (SPEC-REFERRAL §4). Возвращает то же, что quoteOrder, но без *Avail-полей.
- * reserveOrder(userId, qtyMap) -> {base, extra, totalCost, regionsCount, servers,
+ * SPEC-GROWTH2 §B: listType='white' → base=50 и валидация по белому пулу (иначе чёрный, дефолт).
+ * reserveOrder(userId, qtyMap, listType) -> {base, extra, totalCost, regionsCount, servers,
  *   freeUsed, discount(=discountFree), discountFree, bonusUsed, stars, fullyFree}
  */
-function reserveOrder(userId, qtyMap) {
-  const c = computeQtyCost(qtyMap); // валидация ДО транзакции (бросит → free/бонус не тронуты)
+function reserveOrder(userId, qtyMap, listType) {
+  const c = computeQtyCost(qtyMap, listType); // валидация ДО транзакции (бросит → free/бонус не тронуты)
   const tx = db.transaction(() => {
     const freeUsed = consumeFree(userId, Math.min(getFree(userId), c.regionsCount));
     const discountFree = freeUsed * c.base;
@@ -662,7 +777,17 @@ function setSetting(key, value) {
   ).run(String(key), String(value));
 }
 
-function priceStars() {
+/**
+ * Цена за 1-й сервер региона (SPEC-GROWTH2 §B). listType='white' → белый прайс (settings
+ * price_stars_white, дефолт config.WHITE_PRICE_STARS=50); иначе (дефолт, совместимость) —
+ * чёрный прайс (settings price_stars, дефолт DEFAULT_PRICE_STARS=20). priceStars() без аргумента —
+ * ровно как раньше (black), поэтому все существующие вызовы не меняются.
+ */
+function priceStars(listType) {
+  if (listType === 'white') {
+    const w = parseInt(getSetting('price_stars_white', config.WHITE_PRICE_STARS), 10);
+    return Number.isFinite(w) && w > 0 ? w : config.WHITE_PRICE_STARS;
+  }
   const n = parseInt(getSetting('price_stars', config.DEFAULT_PRICE_STARS), 10);
   return Number.isFinite(n) && n > 0 ? n : config.DEFAULT_PRICE_STARS;
 }
@@ -1631,6 +1756,7 @@ module.exports = {
   consumeBonus,
   refInfo,
   attributeReferral,
+  creditReferralOnPurchase,
   refLeaders,
   quoteOrder,
   reserveOrder,

@@ -4,6 +4,8 @@
    SPEC-QTY: количество серверов на регион + 3 сортировки витрины
    SPEC-REFERRAL: вкладка «Друзья» (реф-ссылка) + бонус-звёзды в оплате
    SPEC-MERGE: «МОИ КЛЮЧИ» — объединение всех ключей в ОДИН (merge/unmerge + QR)
+   SPEC-GROWTH2: каталог «⚪ Белые списки 🆕» (white, цена из API) рядом с основным
+                 + анти-фрод тексты рефералки (бонус за друга, который КУПИЛ)
    ═══════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
@@ -30,7 +32,12 @@
   /* ── состояние ───────────────────────────────────────────────── */
   var S = {
     regions: [],
-    regionsSig: '',     // подпись данных: тихий рефреш не трогает DOM без изменений
+    /* SPEC-GROWTH2 §B: два каталога — основной (black) и «Белые списки» (white).
+       cat — кэш последних полезных нагрузок /api/regions по спискам: переключение
+       мгновенное (рендер из кэша + тихий рефреш); sig — подпись данных, тихий
+       рефреш не трогает DOM без изменений. */
+    list: 'black',      // активный каталог: 'black' | 'white'
+    cat: { black: null, white: null }, // list -> {data, sig}
     price: 20,          // base: 1-й сервер региона (из /api/regions, не хардкод)
     extra: 10,          // SPEC-QTY: каждый доп. сервер того же региона (из /api/regions)
     subDays: 30,
@@ -44,7 +51,9 @@
     orders: null,
     free: 0,            // SPEC-FREE: баланс бесплатных регионов (поле free из /api/me)
     bonus: 0,           // SPEC-REFERRAL: бонус-звёзды-скидка (поле bonus из /api/me)
-    ref: { count: 0, link: '' }, // SPEC-REFERRAL: приглашено + личная реф-ссылка (ref из /api/me)
+    /* SPEC-REFERRAL + SPEC-GROWTH2 §A: count — приглашено (КУПИЛИ), pending —
+       перешли по ссылке, но ещё не совершили покупку (поля ref.count/ref.pending) */
+    ref: { count: 0, pending: 0, link: '' },
     tab: 'shop',
     payBusy: false,
     successPage: '',
@@ -59,6 +68,10 @@
     mergeBusy: false,   // идёт POST /api/merge
     qrOpen: false       // открыт QR-оверлей объединённого ключа
   };
+  /* SPEC-GROWTH2 §B: выбор регионов хранится ОТДЕЛЬНО для каждого каталога —
+     переключение black/white не смешивает корзины. Инвариант: S.sel ВСЕГДА
+     ссылается на S.sels[S.list] (мутируем на месте; при пересоздании — синхрон). */
+  S.sels = { black: S.sel, white: {} };
 
   /* ── dom ─────────────────────────────────────────────────────── */
   function $(id) { return document.getElementById(id); }
@@ -91,6 +104,8 @@
   var elSearchWrap = $('searchWrap');
   var elSearchInput = $('searchInput');
   var elSortRow = $('sortRow');
+  var elListRow = $('listRow');   /* SPEC-GROWTH2 §B: переключатель каталогов black/white */
+  var elListNote = $('listNote'); /* пояснение к белым спискам (видно в white) */
   var elTabInd = $('tabInd');
 
   /* ── утилиты ─────────────────────────────────────────────────── */
@@ -502,7 +517,9 @@
     var list = visibleRegions();
     if (!S.regions.length) {
       elGrid.innerHTML = '';
-      showNote('база обновляется — загляни через минуту', true);
+      showNote(S.list === 'white'
+        ? 'белые списки пополняются — загляни чуть позже'
+        : 'база обновляется — загляни через минуту', true);
       return;
     }
     hideNote();
@@ -601,54 +618,89 @@
     });
   }
 
+  /* ── SPEC-GROWTH2 §B: каталоги black/white ───────────────────── */
+  function fetchCatalog(list) {
+    return fetchJson(API + '/regions' + (list === 'white' ? '?list=white' : ''));
+  }
+  function catRec(list) {
+    if (!S.cat[list]) S.cat[list] = { data: null, sig: '' };
+    return S.cat[list];
+  }
+  /* кэш полезной нагрузки + живая цена на кнопке переключателя
+     (обновляется и для НЕактивного каталога — префетч white) */
+  function cacheCatalog(list, d) {
+    catRec(list).data = d;
+    var el = $(list === 'white' ? 'lbPriceWhite' : 'lbPriceBlack');
+    if (el && d && typeof d.price !== 'undefined' && Number(d.price) > 0) {
+      el.textContent = 'от ' + fmtNum(d.price) + ' ⭐';
+    }
+  }
+  /* применить нагрузку каталога к витрине (только когда list активен).
+     Цена/extra/срок — ИЗ API (для white сервер отдаёт base=50), не хардкод;
+     итог всё равно считает сервер в quoteOrder/reserveOrder. */
+  function applyCatalog(list, d, force) {
+    var rec = catRec(list);
+    S.regions = d.regions || [];
+    S.price = Number(d.price) || S.price;
+    /* SPEC-QTY: цена доп. сервера из API (extra=0 — легальное значение) */
+    S.extra = (d.extra === undefined || d.extra === null) ? S.extra : (Number(d.extra) || 0);
+    S.subDays = Number(d.subDays) || S.subDays;
+    S.total = Number(d.total) || 0;
+    S.updatedAt = d.updatedAt || 0;
+    /* в подписи и цены: их смена тоже требует перерисовки карточек */
+    var sig = JSON.stringify([S.regions, S.price, S.extra]);
+    var changed = sig !== rec.sig;
+    rec.sig = sig;
+    // выброс исчезнувших регионов из выбора + кламп qty к доступному количеству
+    var live = {};
+    S.regions.forEach(function (r) { live[r.iso] = Number(r.count) || 0; });
+    Object.keys(S.sel).forEach(function (iso) {
+      var c = live[iso] || 0;
+      if (c < 1) delete S.sel[iso];
+      else if (S.sel[iso] > c) S.sel[iso] = c;
+    });
+    S.selCount = Object.keys(S.sel).length;
+    // факты — по АКТИВНОМУ каталогу; блок «помощь» — по основному (black)
+    $('factPrice').textContent = S.price + ' ★';
+    $('factExtra').textContent = '+' + S.extra + ' ★';
+    $('factDays').textContent = S.subDays + ' ' + plural(S.subDays, 'ДЕНЬ', 'ДНЯ', 'ДНЕЙ');
+    if (list === 'black') {
+      $('helpPrice').textContent = S.price;
+      $('helpExtra').textContent = S.extra;
+      $('helpDays').textContent = S.subDays;
+    }
+    // фильтр при >12 регионов
+    var needSearch = S.regions.length > 12;
+    elSearchWrap.hidden = !needSearch;
+    if (!needSearch && S.query) { S.query = ''; elSearchInput.value = ''; }
+    setTrust();
+    if (force || changed) renderRegions();
+    updatePaybar(true);
+  }
+
   /* silent=true — тихий рефреш: без скелетонов, без плашек, DOM трогаем
-     только если данные реально изменились. Возвращает Promise<boolean>. */
+     только если данные реально изменились. Грузит АКТИВНЫЙ каталог; ответ,
+     пришедший после переключения, уходит только в кэш (regSeq — анти-гонка).
+     Возвращает Promise<boolean>. */
+  var regSeq = 0;
   function loadRegions(silent) {
+    var list = S.list;
+    var seq = ++regSeq;
     if (!silent) {
       skeletons();
       hideNote();
       elTrustText.textContent = 'загрузка…';
     }
-    return fetchJson(API + '/regions')
+    return fetchCatalog(list)
       .then(function (d) {
         if (!d.ok) throw new Error('bad payload');
-        S.regions = d.regions || [];
-        S.price = Number(d.price) || S.price;
-        /* SPEC-QTY: цена доп. сервера из API (extra=0 — легальное значение) */
-        S.extra = (d.extra === undefined || d.extra === null) ? S.extra : (Number(d.extra) || 0);
-        S.subDays = Number(d.subDays) || S.subDays;
-        S.total = Number(d.total) || 0;
-        S.updatedAt = d.updatedAt || 0;
-        /* в подписи и цены: их смена тоже требует перерисовки карточек */
-        var sig = JSON.stringify([S.regions, S.price, S.extra]);
-        var changed = sig !== S.regionsSig;
-        S.regionsSig = sig;
-        // выброс исчезнувших регионов из выбора + кламп qty к доступному количеству
-        var live = {};
-        S.regions.forEach(function (r) { live[r.iso] = Number(r.count) || 0; });
-        Object.keys(S.sel).forEach(function (iso) {
-          var c = live[iso] || 0;
-          if (c < 1) delete S.sel[iso];
-          else if (S.sel[iso] > c) S.sel[iso] = c;
-        });
-        S.selCount = Object.keys(S.sel).length;
-        // факты и помощь
-        $('factPrice').textContent = S.price + ' ★';
-        $('factExtra').textContent = '+' + S.extra + ' ★';
-        $('factDays').textContent = S.subDays + ' ' + plural(S.subDays, 'ДЕНЬ', 'ДНЯ', 'ДНЕЙ');
-        $('helpPrice').textContent = S.price;
-        $('helpExtra').textContent = S.extra;
-        $('helpDays').textContent = S.subDays;
-        // фильтр при >12 регионов
-        var needSearch = S.regions.length > 12;
-        elSearchWrap.hidden = !needSearch;
-        if (!needSearch && S.query) { S.query = ''; elSearchInput.value = ''; }
-        setTrust();
-        if (!silent || changed) renderRegions();
-        updatePaybar(true);
+        cacheCatalog(list, d);
+        if (seq !== regSeq || list !== S.list) return true; /* устаревший ответ — только кэш */
+        applyCatalog(list, d, !silent);
         return true;
       })
       .catch(function () {
+        if (seq !== regSeq || list !== S.list) return false; /* витрина уже про другой каталог */
         elTrustText.textContent = 'нет связи';
         if (!silent) {
           elGrid.innerHTML = '';
@@ -657,6 +709,46 @@
         }
         return false;
       });
+  }
+
+  /* тихий префетч неактивного каталога: первое переключение — мгновенное,
+     цена на кнопке «Белые списки» — настоящая (из API), а не плейсхолдер */
+  function prefetchCatalog(list) {
+    if (catRec(list).data) return;
+    fetchCatalog(list).then(function (d) {
+      if (d && d.ok) cacheCatalog(list, d);
+    }).catch(function () { /* noop: подгрузится при переключении */ });
+  }
+
+  /* переключение каталога: корзины раздельные, рендер из кэша мгновенный */
+  function switchList(list) {
+    if (list !== 'black' && list !== 'white') list = 'black';
+    if (list === S.list) return;
+    S.list = list;
+    S.sel = S.sels[list];
+    S.selCount = Object.keys(S.sel).length;
+    if (S.query) { S.query = ''; elSearchInput.value = ''; }
+    syncListChips();
+    haptic('light');
+    var rec = catRec(list);
+    if (rec.data) {
+      applyCatalog(list, rec.data, true); /* мгновенно из кэша… */
+      loadRegions(true);                  /* …и тихо освежить */
+    } else {
+      updatePaybar(true);
+      loadRegions(false);
+    }
+  }
+  function syncListChips() {
+    if (elListRow) {
+      var btns = elListRow.querySelectorAll('.listbtn');
+      for (var i = 0; i < btns.length; i++) {
+        var on = btns[i].getAttribute('data-list') === S.list;
+        btns[i].classList.toggle('active', on);
+        btns[i].setAttribute('aria-checked', on ? 'true' : 'false');
+      }
+    }
+    if (elListNote) elListNote.hidden = S.list !== 'white';
   }
 
   /* ── бесплатные регионы (SPEC-FREE) ──────────────────────────── */
@@ -719,9 +811,11 @@
     elRefEmpty.hidden = authed;
     if (!authed) return;
     var elCount = $('refCount');
+    var elPending = $('refPending'); /* SPEC-GROWTH2 §A: «ожидают покупки» */
     var elBonus = $('refBonus');
     var elLink = $('refLinkText');
     if (elCount) elCount.textContent = fmtNum(S.ref.count);
+    if (elPending) elPending.textContent = fmtNum(S.ref.pending);
     if (elBonus) elBonus.textContent = fmtNum(S.bonus) + ' ⭐';
     var link = refLink();
     if (elLink) elLink.textContent = link || 'загрузка…';
@@ -803,10 +897,22 @@
   }
   function clearSel() {
     S.sel = {};
+    S.sels[S.list] = S.sel; /* инвариант: S.sel === S.sels[S.list] */
     S.selCount = 0;
     refreshGridSel();
     haptic('light');
     updatePaybar(false);
+  }
+  /* SPEC-GROWTH2 §B: сброс корзины КОНКРЕТНОГО каталога (после успешной оплаты —
+     каталог мог быть уже переключён, чужую корзину не трогаем) */
+  function clearSelFor(list) {
+    S.sels[list] = {};
+    if (S.list === list) {
+      S.sel = S.sels[list];
+      S.selCount = 0;
+      refreshGridSel();
+      updatePaybar(false);
+    }
   }
 
   /* стран/серверов в текущем выборе */
@@ -853,7 +959,10 @@
     var afterFree = Math.max(0, totalCost - freeUsed * S.price);
     var bonusUsed = Math.min(S.bonus, afterFree);
     var total = afterFree - bonusUsed;
-    var line = 'СТРАН: ' + n + ' · СЕРВЕРОВ: ' + st.servers;
+    /* SPEC-GROWTH2 §B: в white-каталоге суммы считаются от его base/extra (из API),
+       и панель явно помечает, что оплачиваются белые списки */
+    var line = (S.list === 'white' ? '⚪ БЕЛЫЕ · ' : '') +
+      'СТРАН: ' + n + ' · СЕРВЕРОВ: ' + st.servers;
     if (freeUsed > 0 && n > 0) line += ' · ' + freeUsed + ' БЕСПЛАТНО';
     elPayLine.textContent = line;
     /* строка бонуса: баланс + фактически применённая скидка */
@@ -897,7 +1006,10 @@
   function pay() {
     if (S.payBusy || !S.selCount) return;
     if (!tg || !initData) { showErr('открой мини-апп внутри Telegram, чтобы оплатить'); return; }
-    /* SPEC-QTY: новый формат тела — items:[{iso,qty}]; итог всегда считает сервер */
+    /* SPEC-QTY: новый формат тела — items:[{iso,qty}]; итог всегда считает сервер.
+       SPEC-GROWTH2 §B: list — из какого каталога заказ ('white' → base=50 на сервере);
+       фиксируем на момент клика: пока открыт инвойс, каталог могли переключить. */
+    var payList = S.list;
     var items = [];
     Object.keys(S.sel).forEach(function (iso) {
       items.push({ iso: iso, qty: Math.max(1, Math.floor(Number(S.sel[iso]) || 1)) });
@@ -909,7 +1021,7 @@
     fetch(API + '/order', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: initData, items: items }),
+      body: JSON.stringify({ initData: initData, list: payList, items: items }),
       signal: ctl ? ctl.signal : undefined
     })
       .then(function (r) {
@@ -926,7 +1038,7 @@
           /* SPEC-FREE: заказ полностью бесплатный — сервер уже выдал ключ,
              счёт не создаётся (инвойс XTR на 0 невозможен), openInvoice не зовём */
           hapticNotify('success');
-          clearSel();
+          clearSelFor(payList);
           S.orders = null;
           showSuccess({ free: true, page: d.page || '' });
           return;
@@ -935,7 +1047,7 @@
           tg.openInvoice(d.invoiceLink, function (status) {
             if (status === 'paid') {
               hapticNotify('success');
-              clearSel();
+              clearSelFor(payList);
               S.orders = null;
               showSuccess();
             } else if (status === 'cancelled') {
@@ -976,10 +1088,13 @@
       .then(function (d) {
         if (!d.ok) throw new Error('bad payload');
         if (typeof d.free !== 'undefined') setFreeBalance(d.free); /* SPEC-FREE: свежий баланс */
-        /* SPEC-REFERRAL: бонус-звёзды + реф-статистика (bonus, ref{count,link}) */
+        /* SPEC-REFERRAL + SPEC-GROWTH2 §A: бонус-звёзды + реф-статистика
+           (bonus, ref{count,pending,link}): count — приглашённые, которые КУПИЛИ;
+           pending — перешли по ссылке, но покупку ещё не совершили */
         var ref = (d.ref && typeof d.ref === 'object') ? d.ref : null;
         if (ref) {
           S.ref.count = Math.max(0, Math.floor(Number(ref.count) || 0));
+          S.ref.pending = Math.max(0, Math.floor(Number(ref.pending) || 0));
           if (typeof ref.link === 'string' && ref.link) S.ref.link = ref.link;
         }
         var bonus = (typeof d.bonus !== 'undefined') ? d.bonus : (ref ? ref.bonus : undefined);
@@ -1363,6 +1478,14 @@
       haptic('light');
       setSort(mode, true);
     });
+    /* SPEC-GROWTH2 §B: переключатель каталогов (основной / белые списки).
+       null-гард — на время жизни кэша старого index.html без переключателя. */
+    if (elListRow) {
+      elListRow.addEventListener('click', function (ev) {
+        var b = ev.target.closest('.listbtn');
+        if (b) switchList(b.getAttribute('data-list'));
+      });
+    }
     /* stagger — только один раз: после проигрыша снимаем класс и delay,
        иначе display-переключение вкладок перезапускало бы анимацию */
     elGrid.addEventListener('animationend', function (ev) {
@@ -1521,11 +1644,15 @@
       if (sv === 'pop' || sv === 'az' || sv === 'count') S.sort = sv;
     } catch (e) { /* noop */ }
     syncSortChips();
+    syncListChips(); /* SPEC-GROWTH2 §B: стартовый каталог — основной (black) */
     bind();
     /* открытый по умолчанию пункт аккордеона — без ограничения высоты */
     var openPanels = document.querySelectorAll('.acc-item.open .acc-panel');
     for (var i = 0; i < openPanels.length; i++) openPanels[i].style.maxHeight = 'none';
     loadRegions(false);
+    /* SPEC-GROWTH2 §B: тихий префетч белых списков — переключение мгновенное,
+       цена на кнопке настоящая; чуть позже старта, чтобы не толкаться с витриной */
+    setTimeout(function () { prefetchCatalog('white'); }, 900);
     updatePaybar(true);
     /* SPEC-REFERRAL: первичный рендер «Друзей» (пустое состояние/фолбэк-ссылка до ответа API) */
     renderFriends();

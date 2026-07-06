@@ -74,6 +74,10 @@ async function main() {
           // SPEC-LOG §7b: персистентный свипер самоудаления сообщений о покупке
           // (переживает рестарт бота). Fire-and-forget, всё внутри в try/catch. При выкл. фиче — no-op.
           saleslog.startSweeper(bot.api);
+          // SPEC-GROWTH2 §C.2: после КАЖДОГО успешного обновления каталога перерисовывать закреп
+          // статистики канала (актуальные «Стран/серверов»). inventory дёргает хук, ошибки глотает;
+          // updateStats сам no-op при выключенном канале. Fire-and-forget при !SKIP_BOT.
+          inventory.onRefreshDone = () => saleslog.updateStats(bot.api);
         },
       })
       .catch((e) => logErr('Бот: polling завершился с ошибкой:', (e && e.message) || e));

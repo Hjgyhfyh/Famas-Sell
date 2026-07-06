@@ -44,6 +44,23 @@ function nowSec() {
   return Math.floor(Date.now() / 1000);
 }
 
+/**
+ * SPEC-GROWTH2 §C.2: опциональный хук, вызываемый ПОСЛЕ каждого успешного refresh каталога.
+ * index.js вешает на него обновление закреплённой статистики канала (updateStats). Инвентарь НЕ
+ * зависит от него жёстко: хук опционален, любые ошибки (в т.ч. отклонённый промис) глотаются —
+ * канал/статистика не влияют на обновление каталога. Читаем из module.exports (index.js его туда пишет).
+ */
+function fireRefreshDone(info) {
+  const hook = module.exports && module.exports.onRefreshDone;
+  if (typeof hook !== 'function') return;
+  try {
+    const p = hook(info);
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  } catch (e) {
+    /* хук опционален — ошибки глотаем */
+  }
+}
+
 /** путь из file:-URL ('file:fixtures/x.txt', 'file:///C:/x.txt') */
 function filePathFromUrl(url) {
   let p = String(url).slice('file:'.length);
@@ -581,6 +598,8 @@ async function doRefreshMulti() {
       reconciled: allOk,
     };
     db.logEvent('refresh', out);
+    // SPEC-GROWTH2 §C.2: успешный refresh → дёрнуть хук (обновить закреп статистики канала). Опц., ошибки глотаются.
+    fireRefreshDone(out);
     return out;
   } catch (e) {
     const msg = String((e && e.message) || e);
@@ -669,6 +688,8 @@ async function doRefreshSingle() {
 
     const out = { ok: true, total, alive, added, revived, deactivated, regions };
     db.logEvent('refresh', { ...out, skipped });
+    // SPEC-GROWTH2 §C.2: успешный refresh → дёрнуть хук (обновить закреп статистики канала). Опц., ошибки глотаются.
+    fireRefreshDone({ ...out, skipped });
     return out;
   } catch (e) {
     const msg =
@@ -727,4 +748,7 @@ module.exports = {
   // SPEC-STABILITY2 §4: экспортируем пробы для тестов (TLS-живой→ok; TCP-открыт-но-не-TLS→мёртв).
   tlsAlive,
   tcpAlive,
+  // SPEC-GROWTH2 §C.2: опциональный хук «после успешного refresh». index.js присваивает функцию
+  // (updateStats канала). null = нет хука (инвентарь работает как раньше). fireRefreshDone читает отсюда.
+  onRefreshDone: null,
 };

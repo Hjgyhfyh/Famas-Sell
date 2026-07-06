@@ -62,6 +62,22 @@
       <div class="freebadge bonusbadge gl mono" id="bonusBadge" role="button" tabindex="0" hidden></div>
     </header>
 
+    <!-- SPEC-GROWTH2 §B: переключатель каталогов — основной (black, 20⭐) рядом
+         с «⚪ Белые списки 🆕» (white, 50⭐); цены живые, из /api/regions -->
+    <div class="listrow" id="listRow" role="radiogroup" aria-label="Выбор каталога">
+      <button type="button" class="listbtn gl active" role="radio" aria-checked="true" data-list="black">
+        <span class="lb-ico" aria-hidden="true">⬛</span>
+        <span class="lb-txt"><b class="mono">ОСНОВНОЙ</b><i class="mono" id="lbPriceBlack">от 20 ⭐</i></span>
+      </button>
+      <button type="button" class="listbtn gl" role="radio" aria-checked="false" data-list="white">
+        <span class="lb-ico" aria-hidden="true">⚪</span>
+        <span class="lb-txt"><b class="mono">БЕЛЫЕ СПИСКИ</b><i class="mono" id="lbPriceWhite">от 50 ⭐</i></span>
+        <span class="lb-new mono" aria-hidden="true">NEW</span>
+      </button>
+    </div>
+    <!-- пояснение к белым спискам (JS показывает только в white-каталоге) -->
+    <div class="listnote gl mono" id="listNote" hidden>⚪ премиум — работают через белые списки РФ</div>
+
     <div class="section-head">
       <h2 class="mono caps sec"><b>01 /</b> регионы</h2>
       <div class="chips">
@@ -111,12 +127,17 @@
       <article class="refcard gl">
         <div class="ref-glyph" aria-hidden="true">🎁</div>
         <h3 class="serif ref-title">Пригласить друзей</h3>
-        <p class="serif ref-sub">+10 ⭐ за каждого друга — хватит на бесплатные серверы</p>
+        <!-- SPEC-GROWTH2 §A (анти-фрод): бонус — за друга, который совершит ПОКУПКУ -->
+        <p class="serif ref-sub">+10 ⭐ за каждого друга, который совершит покупку, — хватит на бесплатные серверы</p>
 
         <div class="ref-stats" role="group" aria-label="Реферальная статистика">
           <div class="ref-stat">
             <span class="rs-num mono" id="refCount">0</span>
-            <span class="rs-lbl mono tiny caps">приглашено</span>
+            <span class="rs-lbl mono tiny caps">приглашено<br>(купили)</span>
+          </div>
+          <div class="ref-stat">
+            <span class="rs-num mono" id="refPending">0</span>
+            <span class="rs-lbl mono tiny caps">ожидают<br>покупки</span>
           </div>
           <div class="ref-stat">
             <span class="rs-num mono" id="refBonus">0 ⭐</span>
@@ -135,12 +156,13 @@
         </div>
       </article>
 
+      <!-- SPEC-GROWTH2 §A: шаги честно объясняют анти-фрод — бонус после ПОКУПКИ друга -->
       <div class="ref-how gl">
         <p class="rh-title mono tiny caps dim">как это работает</p>
         <div class="hs"><b class="mono">01</b><span>Отправь другу свою ссылку — кнопка «Поделиться» выше.</span></div>
-        <div class="hs"><b class="mono">02</b><span>Друг впервые открывает бота по твоей ссылке.</span></div>
-        <div class="hs"><b class="mono">03</b><span>Тебе сразу начисляется бонус — скидка спишется при покупке автоматически.</span></div>
-        <p class="fine mono tiny">засчитываются только новые пользователи · бонус копится и тратится на любые покупки</p>
+        <div class="hs"><b class="mono">02</b><span>Друг впервые открывает бота по твоей ссылке — он попадает в «ожидают покупки».</span></div>
+        <div class="hs"><b class="mono">03</b><span>Как только друг совершит первую покупку — тебе начислится +10 ⭐; скидка спишется при твоей покупке автоматически.</span></div>
+        <p class="fine mono tiny">бонус — только за новых друзей, которые реально купили · действует суточный лимит начислений · бонус копится и тратится на любые покупки</p>
       </div>
     </div>
 
@@ -214,6 +236,8 @@
             <p class="a">Да. Внутри подписки — серверы всех купленных стран, переключайся прямо в приложении.</p>
             <p class="q">— Зачем несколько серверов одной страны?</p>
             <p class="a">Запасные адреса и разные точки внутри страны. Первый сервер — по базовой цене, каждый следующий той же страны — дешевле; актуальные цены — в шапке магазина.</p>
+            <p class="q">— Что за «белые списки»?</p>
+            <p class="a">Премиум-раздел магазина: серверы, работающие через белые списки РФ, — стабильнее в периоды жёстких блокировок. Переключатель каталога — вверху «МАГАЗИНА», цена первого сервера выше основного каталога и показана прямо на переключателе.</p>
             <p class="q">— Серверы меняются?</p>
             <p class="a">Подписка живая: список конфигов обновляется сам, ссылка остаётся прежней.</p>
             <p class="q">— Сколько действует ключ?</p>

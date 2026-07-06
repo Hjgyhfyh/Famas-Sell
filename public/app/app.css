@@ -269,6 +269,51 @@ body.theming, body.theming * {
 .sortchip:active { transform: scale(.95); }
 .sortchip.active { background: var(--pay-bg); border-color: transparent; color: var(--pay-text); box-shadow: var(--pay-shadow); }
 
+/* ── SPEC-GROWTH2 §B: переключатель каталогов — основной / белые списки ── */
+.listrow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 6px 18px 12px; }
+.listbtn {
+  position: relative; min-height: 62px; /* тап-зона ≥44px */
+  display: flex; align-items: center; gap: 10px; text-align: left;
+  background-color: var(--card); border: 1px solid var(--border); border-radius: var(--r-md);
+  color: var(--muted); padding: 12px 13px;
+  transition: transform .15s ease, border-color .18s ease, background-color .18s ease, color .18s ease;
+}
+.listbtn:active { transform: scale(.97); }
+.listbtn.active {
+  border-color: var(--accent); background-color: var(--card2); color: var(--text);
+  box-shadow: 0 6px 18px -12px rgba(0, 0, 0, .6);
+}
+/* лёгкая подкраска активного каталога акцентом (как у выбранной карточки региона) */
+@supports (background: color-mix(in srgb, red 10%, blue)) {
+  .listbtn.active { background-color: color-mix(in srgb, var(--accent) 10%, var(--card2)); }
+  :root[data-glass="1"] .listbtn.active.gl { background-color: color-mix(in srgb, var(--accent) 14%, var(--glass-bg)); }
+}
+.lb-ico { font-size: 16px; line-height: 1; flex: none; }
+.lb-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.lb-txt b { font-size: 10px; font-weight: 700; letter-spacing: .1em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lb-txt i { font-style: normal; font-size: 9px; letter-spacing: .06em; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.listbtn.active .lb-txt i { color: var(--muted); }
+/* заметный бейдж NEW на «Белых списках» — фирменная пилюля с мягкой пульсацией */
+.lb-new {
+  position: absolute; top: -7px; right: 10px; z-index: 1;
+  background: var(--pay-bg); color: var(--pay-text);
+  font-size: 8px; font-weight: 700; letter-spacing: .16em;
+  border-radius: 999px; padding: 3px 8px;
+  box-shadow: var(--pay-shadow);
+  animation: newPulse 2.4s ease-in-out infinite;
+}
+@keyframes newPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.09); } }
+/* пояснение к белым спискам — пилюля-«купон», видна только в white-каталоге */
+.listnote {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  margin: 0 18px 12px; padding: 11px 16px;
+  background-color: var(--card); border: 1px dashed var(--accent); border-radius: 999px;
+  color: var(--text); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  text-align: center;
+  animation: fadeUp .3s var(--ease) backwards;
+}
+:root[data-glass="1"] .listnote.gl { border-color: var(--accent); border-style: dashed; }
+
 /* ── сетка регионов ── */
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 4px 18px 0; }
 @media (min-width: 560px) { .grid { grid-template-columns: 1fr 1fr 1fr; } }
@@ -518,16 +563,16 @@ body.theming, body.theming * {
 @keyframes refFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 .ref-title { font-size: 23px; font-weight: 400; letter-spacing: .04em; }
 .ref-sub { font-style: italic; color: var(--muted); font-size: 13px; margin-top: 7px; text-wrap: balance; }
-/* статы-«купоны»: приглашено / бонус */
-.ref-stats { display: flex; gap: 10px; margin: 18px 0 12px; }
+/* статы-«купоны»: приглашено (купили) / ожидают покупки / бонус (SPEC-GROWTH2 §A) */
+.ref-stats { display: flex; gap: 8px; margin: 18px 0 12px; }
 .ref-stat {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   background: var(--bg2); border: 1px dashed var(--border); border-radius: var(--r-md);
-  padding: 13px 8px 11px;
+  padding: 13px 4px 11px;
 }
-.rs-num { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.rs-lbl { color: var(--dim); }
+.rs-num { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.rs-lbl { color: var(--dim); font-size: 9px; letter-spacing: .09em; text-align: center; line-height: 1.6; }
 /* моно-бокс реф-ссылки: dashed-акцент как у купона, тап целиком = копировать */
 .ref-linkbox {
   display: flex; align-items: center; gap: 10px;
@@ -732,6 +777,9 @@ body.theming, body.theming * {
   .sortchip:hover { color: var(--text); border-color: var(--muted); }
   .sortchip.active:hover { color: var(--pay-text); border-color: transparent; }
   .sortchip:hover:active { transform: scale(.95); }
+  .listbtn:hover { color: var(--text); border-color: var(--muted); transform: translateY(-1px); }
+  .listbtn.active:hover { border-color: var(--accent); }
+  .listbtn:hover:active { transform: scale(.97); }
   .qbtn:not(:disabled):hover { border-color: var(--muted); }
   .search input:hover { border-color: var(--muted); }
   .region:hover { border-color: var(--muted); transform: translateY(-2px); box-shadow: var(--shadow-card); }
@@ -768,5 +816,5 @@ body.theming, body.theming * {
   }
   /* спиннеры — индикаторы состояния, оставляем живыми */
   .pb-spin, .mg-spin { animation-duration: .7s !important; }
-  .bl, .dot, .skel::after, .ref-glyph, .mg-ico { animation: none !important; }
+  .bl, .dot, .skel::after, .ref-glyph, .mg-ico, .lb-new { animation: none !important; }
 }

@@ -151,6 +151,15 @@ const config = {
   // SPEC-REFERRAL §1: бонус-звёзды за каждого приглашённого НОВОГО пользователя.
   // Копятся у пригласившего (users.bonus_stars) и тратятся скидкой на покупки. Дефолт 10.
   REF_BONUS_STARS: envNum('REF_BONUS_STARS', 10),
+  // SPEC-GROWTH2 §A: анти-фрод рефералки. REF_REQUIRE_PURCHASE=1 (дефолт) — бонус пригласившему
+  // НЕ начисляется на /start, а только когда приглашённый РЕАЛЬНО оплатил покупку (боты-накрутка
+  // бессмысленна). =0 → старое поведение (бонус сразу на /start). REF_DAILY_CAP — максимум зачтённых
+  // рефералов на пригласившего за МСК-сутки (защита от массовой накрутки). Дефолт 20.
+  REF_REQUIRE_PURCHASE: envBool('REF_REQUIRE_PURCHASE', 1),
+  REF_DAILY_CAP: envNum('REF_DAILY_CAP', 20),
+  // SPEC-GROWTH2 §B: цена сервера в разделе «Белые списки» (премиум, РФ-whitelist). Дефолт 50⭐
+  // (чёрный каталог — DEFAULT_PRICE_STARS=20). Переопределяется настройкой settings.price_stars_white.
+  WHITE_PRICE_STARS: envNum('WHITE_PRICE_STARS', 50),
   DB_PATH: envStr('DB_PATH', './data/famas.db'),
   SKIP_BOT: /^(1|true|yes)$/i.test(envStr('SKIP_BOT', '0')) ? 1 : 0,
   BOT_USERNAME: envStr('BOT_USERNAME', 'FamasSellerBot').replace(/^@/, ''),

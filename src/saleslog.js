@@ -338,6 +338,16 @@ async function updateStats(api) {
  */
 async function logSale(api, order, kind) {
   if (!enabled() || !api || !order) return;
+  // SPEC-GROWTH2 §C.1: не палим в канал админские выдачи/тесты (свои же заказы владельца).
+  // Если user_id заказа ∈ config.ADMIN_IDS — просто выходим (ни поста, ни обновления статистики).
+  try {
+    const uid = Number(order.user_id);
+    if (Number.isFinite(uid) && Array.isArray(config.ADMIN_IDS) && config.ADMIN_IDS.includes(uid)) {
+      return;
+    }
+  } catch (e) {
+    /* не смогли определить — логируем как обычно (не теряем реальные продажи) */
+  }
   const chat = channelId();
   try {
     let sent = null;

@@ -120,26 +120,44 @@ const PROMPT_TTL = 30 * 60 * 1000;     // админ-промпты (ForceReply)
 const SORT_MODES = ['pop', 'az', 'srv'];
 const SORT_LABEL = { pop: 'Популярные', az: 'А-Я', srv: 'Серверов ↓' };
 
-/** userId -> { map:Map<ISO,qty>, sort:'pop'|'az'|'srv', at:ms } — выбор регионов с количеством */
+/** userId -> { map:Map<ISO,qty>, sort:'pop'|'az'|'srv', list:'black'|'white', at:ms } — выбор регионов */
 const selections = new Map();
 /** adminId -> { type:'price'|'days'|'extra'|'gift'|'bcast', msgId, at:ms } */
 const adminPrompts = new Map();
 /** adminId -> { fromChat, msgId, at:ms } — подготовленная рассылка */
 const pendingBroadcasts = new Map();
 
-/** Состояние выбора юзера: {map:Map<ISO,qty>, sort}. Ленивая подчистка протухшего. */
+/** Состояние выбора юзера: {map:Map<ISO,qty>, sort, list}. Ленивая подчистка протухшего. */
 function getSelState(userId) {
   const t = Date.now();
   for (const [k, v] of selections) if (t - v.at > SEL_TTL) selections.delete(k);
   let entry = selections.get(userId);
   if (!entry) {
-    entry = { map: new Map(), sort: 'pop', at: t };
+    entry = { map: new Map(), sort: 'pop', list: 'black', at: t };
     selections.set(userId, entry);
   }
   if (!(entry.map instanceof Map)) entry.map = new Map();
   if (!SORT_MODES.includes(entry.sort)) entry.sort = 'pop';
+  if (entry.list !== 'white') entry.list = 'black';
   entry.at = t;
   return entry;
+}
+
+/**
+ * SPEC-GROWTH2 §B.4: переключить активный раздел витрины (чёрный/белый) для юзера. Если раздел
+ * СМЕНИЛСЯ — чистим выбор (регионы/доступность у пулов разные) и сбрасываем сортировку на «Популярные»
+ * (дефолт белого раздела). Возвращает актуальный st. Вызывается из /vpn (black) и /white (white),
+ * а также из кнопок shop/white — чтобы pay/степперы/итог считались по нужному пулу.
+ */
+function setSelList(userId, listType) {
+  const st = getSelState(userId);
+  const lt = listType === 'white' ? 'white' : 'black';
+  if (st.list !== lt) {
+    st.map.clear();
+    st.list = lt;
+    st.sort = 'pop';
+  }
+  return st;
 }
 
 /** Клиентская сортировка витрины (SPEC-QTY §7/§8): pop / az / srv, стабильный тай-брейк. */
@@ -250,6 +268,8 @@ function mainMenuKb(isPrivate) {
     .text('🔐 VPN-ключи', 'shop')
     .text('🛍 Каталог', 'catalog')
     .row()
+    .text('⚪ Белые списки 🆕', 'white')
+    .row()
     .text('👤 Профиль', 'profile')
     .text('❓ Помощь', 'help')
     .row()
@@ -298,33 +318,56 @@ function catalogView(isPrivate) {
     `Срок ${daysWord(days)} · одна живая ссылка:`,
     'конфиги внутри обновляются сами.',
     '',
-    '02 / ─ скоро ─',
+    '02 / БЕЛЫЕ СПИСКИ 🆕',
+    THIN,
+    `Премиум-серверы через белые списки РФ · ${db.priceStars('white')} ⭐`,
     LINE,
   ].join('\n');
-  const kb = new InlineKeyboard().text('🔐 Выбрать регионы', 'shop');
+  const kb = new InlineKeyboard()
+    .text('🔐 Выбрать регионы', 'shop')
+    .row()
+    .text('⚪ Белые списки 🆕', 'white')
+    .row();
   if (isPrivate) kb.webApp('⬛ Mini App', APP_URL);
   else kb.url('⬛ Mini App', BOT_URL);
   return { text, kb };
 }
 
-function shopView(userId) {
+/**
+ * Витрина выбора серверов (SPEC-QTY §7 + SPEC-GROWTH2 §B.4). listType задан → переключаем активный
+ * раздел (setSelList: black=/vpn, white=/white); НЕ задан → рендерим по текущему st.list (для
+ * refreshShopMarkup после степперов). Белый раздел: пул white, цена 50, бейдж 🆕, дефолт-сортировка
+ * «Популярные». Расчёт цены/валидация — по своему пулу (quoteOrder(...,lt)).
+ */
+function shopView(userId, listType) {
+  const st = listType !== undefined ? setSelList(userId, listType) : getSelState(userId);
+  const lt = st.list;
+  const isWhite = lt === 'white';
+  const retryCb = isWhite ? 'white' : 'shop';
+
   let regions = [];
   try {
-    regions = db.regionsSummary();
+    regions = db.regionsSummary(lt);
   } catch (e) {
     console.error('[bot] regionsSummary:', errText(e));
   }
   if (!regions.length) {
-    const text = [
-      BRAND,
-      LINE,
-      'База серверов сейчас обновляется.',
-      'Загляни через минуту.',
-    ].join('\n');
-    return { text, kb: new InlineKeyboard().text('⟳ Проверить ещё раз', 'shop') };
+    const text = isWhite
+      ? [
+          `${BRAND} · БЕЛЫЕ СПИСКИ 🆕`,
+          LINE,
+          'Премиум-серверы через белые списки РФ.',
+          'Раздел скоро наполнится — загляни позже.',
+        ].join('\n')
+      : [
+          BRAND,
+          LINE,
+          'База серверов сейчас обновляется.',
+          'Загляни через минуту.',
+        ].join('\n');
+    return { text, kb: new InlineKeyboard().text('⟳ Проверить ещё раз', retryCb) };
   }
 
-  const st = getSelState(userId);
   const selMap = st.map;
   const knownMap = new Map(regions.map((r) => [r.iso, r]));
   // подчистка: снять неизвестные, ужать qty до available, снять нулевые
@@ -337,7 +380,7 @@ function shopView(userId) {
     selMap.set(iso, qn);
   }
 
-  const base = db.priceStars();
+  const base = db.priceStars(lt);
   const extra = db.extraStars();
   const sorted = sortRegions(regions, st.sort);
   const kb = new InlineKeyboard();
@@ -374,10 +417,11 @@ function shopView(userId) {
   const bonusAvail = (() => { try { return db.getBonus(userId); } catch (e) { return 0; } })();
   if (bonusAvail > 0) kb.text(`🎁 Бонус: ${bonusAvail} ⭐`, 'noop').row();
 
-  // итог — единый расчёт через quoteOrder (чистый, без списания); учитывает free И бонус
+  // итог — единый расчёт через quoteOrder (чистый, без списания); учитывает free И бонус.
+  // SPEC-GROWTH2 §B: считаем по активному пулу lt (white → base=50, валидация по белому пулу).
   let q = null;
   if (selMap.size > 0) {
-    try { q = db.quoteOrder(userId, Object.fromEntries(selMap)); } catch (e) { q = null; }
+    try { q = db.quoteOrder(userId, Object.fromEntries(selMap), lt); } catch (e) { q = null; }
   }
   if (q) {
     let totalLabel = `▸ Стран: ${q.regionsCount} · Серверов: ${q.servers} · Итого: ${q.stars} ⭐`;
@@ -395,12 +439,13 @@ function shopView(userId) {
   }
 
   const text = [
-    BRAND,
+    isWhite ? `${BRAND} · БЕЛЫЕ СПИСКИ 🆕` : BRAND,
     LINE,
-    'В Ы Б О Р   С Е Р В Е Р О В',
+    isWhite ? 'Б Е Л Ы Е   С П И С К И' : 'В Ы Б О Р   С Е Р В Е Р О В',
     '',
-    'Отметь страны и число серверов — всё',
-    'соберётся в одну живую ссылку-подписку.',
+    ...(isWhite
+      ? ['Премиум-серверы, работают через белые', 'списки РФ. Отметь страны и число серверов —', 'всё соберётся в одну живую ссылку.']
+      : ['Отметь страны и число серверов — всё', 'соберётся в одну живую ссылку-подписку.']),
     '',
     `1-й сервер страны: ${base} ⭐ · каждый след.: +${extra} ⭐`,
     `Срок: ${daysWord(db.subDays())}`,
@@ -519,9 +564,9 @@ function profileView(from) {
   return { text: lines.join('\n'), kb };
 }
 
-/** Карточка реф-программы (SPEC-REFERRAL §5): ссылка, приглашено/бонус, пояснение, share. */
+/** Карточка реф-программы (SPEC-REFERRAL §5 + SPEC-GROWTH2 §A): ссылка, приглашено/ждут/бонус, share. */
 function refView(from) {
-  let info = { count: 0, bonus: 0, referredBy: null };
+  let info = { count: 0, bonus: 0, referredBy: null, pending: 0 };
   try {
     info = db.refInfo(from.id);
   } catch (e) {
@@ -529,6 +574,8 @@ function refView(from) {
   }
   const link = refLink(from.id);
   const bonusStars = config.REF_BONUS_STARS;
+  // SPEC-GROWTH2 §A.5: бонус — за друга, который РЕАЛЬНО совершит покупку (анти-фрод).
+  const requirePurchase = !!config.REF_REQUIRE_PURCHASE;
   const text = [
     `${BRAND} · ПРИГЛАШАЙ ДРУЗЕЙ`,
     LINE,
@@ -536,10 +583,13 @@ function refView(from) {
     `<code>${esc(link)}</code>`,
     '(нажми — скопируется)',
     '',
-    `Приглашено: ${info.count}`,
+    `Приглашено (купили): ${info.count}`,
+    ...(requirePurchase ? [`Ожидают покупки: ${info.pending || 0}`] : []),
     `Бонус: ${info.bonus} ⭐`,
     THIN,
-    `+${bonusStars} ⭐ за каждого нового друга.`,
+    requirePurchase
+      ? `+${bonusStars} ⭐ за друга, который совершит покупку.`
+      : `+${bonusStars} ⭐ за каждого нового друга.`,
     'Бонус копится и тратится на покупки —',
     'позовёшь друзей, наберёшь на бесплатные серверы.',
     LINE,
@@ -731,10 +781,12 @@ function ordersListText() {
 async function sendDelivery(api, chatId, order) {
   const isos = parseRegions(order);
   const qty = parseQtyOf(order); // SPEC-QTY §7: показать ×qty и Серверов внутри = Σqty
+  const lt = order && order.list_type === 'white' ? 'white' : 'black'; // SPEC-GROWTH2 §B: пул заказа
   const meta = regionMetaMap();
   // SPEC-HARDEN ч.1 §5: показываем число ДОСТУПНЫХ (живых) серверов сейчас, а не купленных.
+  // SPEC-GROWTH2 §B: считаем живых по пулу заказа (white-заказ → белый пул), иначе счётчик врал бы.
   const aliveMap = (() => {
-    try { return db.aliveCountForRegions(isos); } catch (e) { return new Map(); }
+    try { return db.aliveCountForRegions(isos, lt); } catch (e) { return new Map(); }
   })();
   let regionsLine;
   let purchased; // купленное серверов
@@ -1165,7 +1217,7 @@ function createBot() {
       try {
         const res = db.attributeReferral(ctx.from.id, inviterId);
         if (res && res.credited) {
-          // уведомить пригласившего (мог не открывать бота — глотаем)
+          // Легаси-путь (REF_REQUIRE_PURCHASE=0): бонус начислен сразу — уведомить пригласившего.
           try {
             const info = db.refInfo(inviterId);
             await ctx.api.sendMessage(
@@ -1180,7 +1232,6 @@ function createBot() {
           } catch (e) {
             /* пригласивший недоступен */
           }
-          // мягко сообщить новичку
           try {
             await ctx.reply(
               [
@@ -1188,6 +1239,22 @@ function createBot() {
                 THIN,
                 'Ты пришёл по приглашению друга ⁂',
                 'Бонус пригласившего уже начислен — оформляй ключи.',
+              ].join('\n'),
+              msgOpts()
+            );
+          } catch (e) {
+            /* не критично */
+          }
+        } else if (res && res.linked) {
+          // SPEC-GROWTH2 §A: анти-фрод — только линковка, бонус пригласившему начислится, когда
+          // новичок совершит первую ПЛАТНУЮ покупку. Пригласившего сейчас НЕ уведомляем (нет накрутки).
+          try {
+            await ctx.reply(
+              [
+                BRAND,
+                THIN,
+                'Ты пришёл по приглашению друга ⁂',
+                `Оформи первую покупку — другу начислится +${config.REF_BONUS_STARS} ⭐ бонуса.`,
               ].join('\n'),
               msgOpts()
             );
@@ -1215,7 +1282,13 @@ function createBot() {
   });
 
   bot.command('vpn', async (ctx) => {
-    const v = shopView(ctx.from.id);
+    const v = shopView(ctx.from.id, 'black');
+    await ctx.reply(v.text, msgOpts(v.kb));
+  });
+
+  // SPEC-GROWTH2 §B.4: отдельный вход в раздел «Белые списки» (пул white, цена 50, сорт «Популярные»).
+  bot.command('white', async (ctx) => {
+    const v = shopView(ctx.from.id, 'white');
     await ctx.reply(v.text, msgOpts(v.kb));
   });
 
@@ -1479,6 +1552,33 @@ function createBot() {
       // Строго на переходе pending→paid (идемпотентно к дубль-апдейту). Fire-and-forget:
       // saleslog всё глотает сам, .catch — последний рубеж, выдачу не роняем.
       saleslog.logSale(ctx.api, order, 'paid').catch((e) => console.error('[bot] saleslog paid:', errText(e)));
+
+      // SPEC-GROWTH2 §A.4: анти-фрод рефералки — первая ПЛАТНАЯ покупка приглашённого начисляет бонус
+      // пригласившему. Только реальная оплата (stars>0, charge != FREE); free/gift этот путь не проходят.
+      // Идемпотентно (гейт ref_credited в db) + суточный лимит (REF_DAILY_CAP). Ошибки не роняют выдачу.
+      try {
+        if (Number(sp.total_amount) > 0 && sp.telegram_payment_charge_id !== 'FREE') {
+          const cr = db.creditReferralOnPurchase(order.user_id);
+          if (cr && cr.credited && cr.inviter) {
+            try {
+              const info = db.refInfo(cr.inviter);
+              await ctx.api.sendMessage(
+                cr.inviter,
+                [
+                  '🎉 Твой друг совершил покупку!',
+                  `+${config.REF_BONUS_STARS} ⭐ бонуса.`,
+                  `Приглашено (купили): ${info.count} · бонус: ${info.bonus} ⭐`,
+                ].join('\n'),
+                msgOpts()
+              );
+            } catch (e) {
+              /* пригласивший недоступен (не открывал бота) — глотаем */
+            }
+          }
+        }
+      } catch (e) {
+        console.error('[bot] creditReferralOnPurchase:', errText(e));
+      }
     }
   });
 
@@ -1490,7 +1590,14 @@ function createBot() {
 
   bot.callbackQuery('shop', async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
-    const v = shopView(ctx.from.id);
+    const v = shopView(ctx.from.id, 'black');
+    await editOrReply(ctx, v.text, v.kb);
+  });
+
+  // SPEC-GROWTH2 §B.4: кнопка «⚪ Белые списки 🆕» (в /start и /catalog) → витрина белого пула.
+  bot.callbackQuery('white', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const v = shopView(ctx.from.id, 'white');
     await editOrReply(ctx, v.text, v.kb);
   });
 
@@ -1579,7 +1686,7 @@ function createBot() {
     const st = getSelState(ctx.from.id);
     let known = [];
     try {
-      known = db.regionsSummary();
+      known = db.regionsSummary(st.list); // SPEC-GROWTH2 §B: валидируем по активному пулу
     } catch (e) {
       console.error('[bot] regionsSummary:', errText(e));
     }
@@ -1599,7 +1706,7 @@ function createBot() {
     const st = getSelState(ctx.from.id);
     let r = null;
     try {
-      r = db.regionsSummary().find((x) => x.iso === iso) || null;
+      r = db.regionsSummary(st.list).find((x) => x.iso === iso) || null; // активный пул
     } catch (e) {
       console.error('[bot] regionsSummary:', errText(e));
     }
@@ -1645,7 +1752,7 @@ function createBot() {
   bot.callbackQuery('all', async (ctx) => {
     const st = getSelState(ctx.from.id);
     try {
-      for (const r of db.regionsSummary()) if (!st.map.has(r.iso)) st.map.set(r.iso, 1);
+      for (const r of db.regionsSummary(st.list)) if (!st.map.has(r.iso)) st.map.set(r.iso, 1);
     } catch (e) {
       console.error('[bot] regionsSummary:', errText(e));
     }
@@ -1662,9 +1769,10 @@ function createBot() {
   bot.callbackQuery('pay', async (ctx) => {
     const uid = ctx.from.id;
     const st = getSelState(uid);
+    const lt = st.list; // SPEC-GROWTH2 §B: активный пул (black|white) — цена/валидация/list_type заказа
     let summary = [];
     try {
-      summary = db.regionsSummary();
+      summary = db.regionsSummary(lt);
     } catch (e) {
       console.error('[bot] regionsSummary:', errText(e));
     }
@@ -1692,7 +1800,7 @@ function createBot() {
     // q.freeUsed — фактически списанное. Валидация qty — внутри reserveOrder (бросит → сообщение).
     let q;
     try {
-      q = db.reserveOrder(uid, qtyObj);
+      q = db.reserveOrder(uid, qtyObj, lt);
     } catch (e) {
       await ctx.reply(
         `✕ ${esc((e && e.message) || 'Не удалось оформить заказ')}\nОткрой /vpn и попробуй снова.`,
@@ -1713,6 +1821,7 @@ function createBot() {
         freeApplied: q.freeUsed,
         bonusApplied: q.bonusUsed,
         chargeId: 'FREE',
+        listType: lt,
       });
       // free и бонус уже списаны атомарно в reserveOrder (§7b/§4) — отдельного списания тут нет.
       selections.delete(uid); // корзина сыграла
@@ -1750,6 +1859,7 @@ function createBot() {
       days,
       freeApplied: q.freeUsed,
       bonusApplied: q.bonusUsed,
+      listType: lt,
     });
     const meta = regionMetaMap();
     const flags = chosen.map((iso) => {
