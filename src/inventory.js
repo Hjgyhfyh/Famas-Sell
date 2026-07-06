@@ -175,20 +175,46 @@ async function runHealthcheck() {
         const down = checked - up;
         const deadFraction = checked > 0 ? down / checked : 0;
 
+        // Высокая доля недоступных бывает по двум причинам: (а) реальный сетевой сбой на
+        // VDS/резолвере — тогда alive трогать нельзя; (б) у скрап-источников батч честно может
+        // быть на >85% мёртвым — тогда мёртвых НАДО пометить. Различаем канарейками: пробуем
+        // заведомо живые публичные хосты. Живы канарейки → сеть в порядке → смертность реальна →
+        // применяем. Канарейки тоже недоступны → сеть лежит → сейфгард (не трогаем alive).
+        let networkDown = false;
         if (deadFraction > HEALTHCHECK_MAX_DEAD_FRACTION) {
-          // сейфгард: вероятный сетевой сбой — не трогаем alive, только блэклист остаётся
+          const canaries = [
+            ['1.1.1.1', 443],
+            ['8.8.8.8', 443],
+            ['9.9.9.9', 443],
+            ['github.com', 443],
+          ];
+          let canaryUp = 0;
+          try {
+            const cr = await runPool(canaries, canaries.length, (c) =>
+              tcpAlive(c[0], c[1], timeoutMs)
+            );
+            canaryUp = cr.filter((x) => x === true).length;
+          } catch (e) {
+            canaryUp = 0;
+          }
+          networkDown = canaryUp === 0; // все канарейки мертвы → это сеть/резолвер, а не серверы
+        }
+
+        if (networkDown) {
+          // сейфгард: подтверждённый сетевой сбой — не трогаем alive, только блэклист остаётся
           try {
             db.logEvent('healthcheck_skip', {
               checked,
               up,
               down,
               deadFraction: Number(deadFraction.toFixed(3)),
+              reason: 'network_down',
             });
           } catch (e) {
             // журнал не критичен
           }
           console.error(
-            `[${new Date().toISOString()}] inventory: healthcheck пропущен (сейфгард): ` +
+            `[${new Date().toISOString()}] inventory: healthcheck пропущен (сейфгард, сеть недоступна): ` +
               `${down}/${checked} недоступны (${Math.round(deadFraction * 100)}%) — TCP не применён`
           );
         } else {
