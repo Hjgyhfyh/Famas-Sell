@@ -680,7 +680,10 @@ function mergeInto(map, text, opts) {
       stats.added++;
     } else {
       const best = pickBest(prev, cfg);
-      if (prev.category === 'white' || cfg.category === 'white') best.category = 'white';
+      // black побеждает: сервер, встреченный в любом основном (black) источнике 1-25, продаётся в
+      // основном каталоге. Категорию 'white' сохраняют ТОЛЬКО серверы, эксклюзивные для whitelist-
+      // источника (файл 26) — это и есть отдельный NEW-набор «белые списки».
+      if (prev.category === 'black' || cfg.category === 'black') best.category = 'black';
       map.set(cfg.hash, best);
       stats.merged++;
     }
