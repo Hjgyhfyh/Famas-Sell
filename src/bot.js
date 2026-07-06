@@ -1109,15 +1109,9 @@ function createBot() {
     // (после краша до ack) — без дублей продаж в журнале и спама админам.
     await sendDelivery(ctx.api, ctx.chat.id, order);
     if (wasPending) {
-      // списываем бесплатные регионы по факту выдачи; строго на переходе
-      // pending→paid (идемпотентно к дубль-апдейту Telegram, как notify/log ниже)
-      if (order && Number(order.free_applied) > 0) {
-        try {
-          db.consumeFree(order.user_id, Number(order.free_applied));
-        } catch (e) {
-          console.error('[bot] consumeFree on pay:', errText(e));
-        }
-      }
+      // free уже списан атомарно при СОЗДАНИИ заказа (reserveOrder, §7b) — здесь
+      // только фиксируем продажу и уведомляем, строго на переходе pending→paid
+      // (идемпотентно к дубль-апдейту Telegram: notify/log под wasPending).
       try {
         db.logEvent('sale', { orderId: id, userId: ctx.from.id, stars: sp.total_amount });
       } catch (e) { /* ок */ }
@@ -1222,7 +1216,9 @@ function createBot() {
     await ctx.answerCallbackQuery().catch(() => {});
 
     const days = db.subDays();
-    const q = db.quoteOrder(uid, chosen.length);
+    // АТОМАРНОЕ оформление (§7b): free списывается ПРЯМО СЕЙЧАС в одной транзакции,
+    // q.freeUsed — фактически списанное. shopView-превью выше считает quoteOrder (не списывая).
+    const q = db.reserveOrder(uid, chosen.length);
 
     // полностью бесплатный заказ: выдаём сразу, БЕЗ инвойса (XTR на 0 нельзя)
     if (q.fullyFree) {
@@ -1235,12 +1231,7 @@ function createBot() {
         freeApplied: q.freeUsed,
         chargeId: 'FREE',
       });
-      let consumed = 0;
-      try {
-        consumed = db.consumeFree(uid, q.freeUsed);
-      } catch (e) {
-        console.error('[bot] consumeFree:', errText(e));
-      }
+      // free уже списан атомарно в reserveOrder (§7b) — отдельный consumeFree тут не нужен.
       selections.delete(uid); // корзина сыграла
       const order = db.getOrder(created.id);
       try {
@@ -1248,7 +1239,7 @@ function createBot() {
           orderId: created.id,
           userId: uid,
           regions: chosen,
-          freeApplied: consumed || q.freeUsed,
+          freeApplied: q.freeUsed,
         });
       } catch (e) { /* ок */ }
       try {

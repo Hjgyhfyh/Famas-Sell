@@ -183,6 +183,35 @@ function quoteOrder(userId, regionsCount) {
   };
 }
 
+/**
+ * АТОМАРНОЕ оформление заказа со скидкой (SPEC-FREE §7b) — закрывает абьюз
+ * частичной скидки. В отличие от quoteOrder (чистый, только для отображения),
+ * reserveOrder СПИСЫВАЕТ бесплатные регионы СРАЗУ, в ОДНОЙ транзакции, и
+ * возвращает по-настоящему применённое. Звать только В МОМЕНТ создания заказа.
+ * reserveOrder(userId, regionsCount) -> {price, freeUsed, payableCount, stars, fullyFree}
+ *   freeUsed     — фактически списанное (consumeFree), не «доступное»;
+ *   payableCount — regionsCount - freeUsed;
+ *   stars        — price * payableCount (0 => полностью бесплатно);
+ *   fullyFree    — stars === 0 && regionsCount > 0.
+ */
+function reserveOrder(userId, regionsCount) {
+  const price = priceStars();
+  const count = Math.max(0, Math.floor(Number(regionsCount) || 0));
+  const tx = db.transaction(() => {
+    const freeUsed = consumeFree(userId, Math.min(getFree(userId), count));
+    const payableCount = count - freeUsed;
+    const stars = price * payableCount;
+    return {
+      price,
+      freeUsed,
+      payableCount,
+      stars,
+      fullyFree: stars === 0 && count > 0,
+    };
+  });
+  return tx();
+}
+
 /* ───────────────────── settings ───────────────────── */
 
 function getSetting(key, def) {
@@ -437,6 +466,7 @@ module.exports = {
   usersWithFree,
   findUserByUsername,
   quoteOrder,
+  reserveOrder,
   getSetting,
   setSetting,
   priceStars,

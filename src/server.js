@@ -218,10 +218,6 @@ function createServer(botApi) {
       }
     }
 
-    const days = db.subDays();
-    // единый расчёт цены со скидкой (§3): те же числа, что видит бот
-    const q = db.quoteOrder(auth.user.id, isos.length);
-
     try {
       db.upsertUser({
         id: auth.user.id,
@@ -231,6 +227,12 @@ function createServer(botApi) {
     } catch (e) {
       logErr('order/upsertUser', e); // не критично для заказа
     }
+
+    const days = db.subDays();
+    // АТОМАРНОЕ оформление со скидкой (§7b): free списывается ПРЯМО СЕЙЧАС в одной
+    // транзакции (не при выдаче) — закрывает абьюз частичной скидки. q.freeUsed —
+    // фактически списанное, инвойс/выдача считаются по q.stars / q.payableCount.
+    const q = db.reserveOrder(auth.user.id, isos.length);
 
     // Полностью бесплатный заказ: выдаём сразу, БЕЗ invoiceLink и без botApi (XTR на 0 нельзя).
     if (q.fullyFree) {
@@ -246,11 +248,7 @@ function createServer(botApi) {
       if (!created || !created.id) {
         return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
       }
-      try {
-        db.consumeFree(auth.user.id, q.freeUsed);
-      } catch (e) {
-        logErr('order/consumeFree', e);
-      }
+      // free уже списан атомарно в reserveOrder (§7b) — повторный consumeFree тут был бы двойным списанием.
       try {
         db.logEvent('free_order', { orderId: created.id, userId: auth.user.id, regions: isos, freeApplied: q.freeUsed });
       } catch (e) {
