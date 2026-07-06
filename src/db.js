@@ -86,6 +86,22 @@ function migrate() {
   if (!columnExists('configs', 'alive')) {
     db.exec('ALTER TABLE configs ADD COLUMN alive INTEGER DEFAULT 1');
   }
+  // SPEC-REFERRAL §2: реферальная программа. bonus_stars — пул бонус-звёзд-скидки;
+  // referred_by — кто пригласил (ставится один раз, NULL если сам); ref_count — сколько привёл;
+  // orders.bonus_applied — сколько бонус-звёзд списано в заказе. columnExists-guard идемпотентен,
+  // на уже существующей БД ничего не ломает.
+  if (!columnExists('users', 'bonus_stars')) {
+    db.exec('ALTER TABLE users ADD COLUMN bonus_stars INTEGER DEFAULT 0');
+  }
+  if (!columnExists('users', 'referred_by')) {
+    db.exec('ALTER TABLE users ADD COLUMN referred_by INTEGER');
+  }
+  if (!columnExists('users', 'ref_count')) {
+    db.exec('ALTER TABLE users ADD COLUMN ref_count INTEGER DEFAULT 0');
+  }
+  if (!columnExists('orders', 'bonus_applied')) {
+    db.exec('ALTER TABLE orders ADD COLUMN bonus_applied INTEGER DEFAULT 0');
+  }
 }
 
 /* ───────────────────── users ───────────────────── */
@@ -173,6 +189,118 @@ function findUserByUsername(name) {
         ORDER BY last_seen DESC LIMIT 1`
     ).get(s) || null
   );
+}
+
+/* ────────── реферальная программа: бонус-звёзды (SPEC-REFERRAL §3) ────────── */
+
+/** Текущий пул бонус-звёзд юзера; 0 если юзера нет. */
+function getBonus(userId) {
+  const row = stmt('SELECT bonus_stars FROM users WHERE id=?').get(Number(userId));
+  return row ? Number(row.bonus_stars) || 0 : 0;
+}
+
+/**
+ * Установить пул бонус-звёзд (SET). Апсертит user-строку при отсутствии
+ * (first_seen/last_seen=now если создаём). Не ниже 0. Возвращает установленное. Внутренний.
+ */
+function setBonus(userId, n) {
+  const id = Number(userId);
+  const val = Math.max(0, Math.floor(Number(n) || 0));
+  const t = now();
+  stmt(
+    `INSERT INTO users(id, bonus_stars, first_seen, last_seen)
+     VALUES(?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET bonus_stars=excluded.bonus_stars`
+  ).run(id, val, t, t);
+  return val;
+}
+
+/** Прибавить к пулу бонус-звёзд (может быть отрицательным); итог не ниже 0. Возвращает новое значение. */
+function addBonus(userId, delta) {
+  const next = getBonus(userId) + Math.floor(Number(delta) || 0);
+  return setBonus(userId, next);
+}
+
+/** Списать min(текущее, max(0,n)) бонус-звёзд; вернуть фактически списанное. Не создаёт юзера. */
+function consumeBonus(userId, n) {
+  const id = Number(userId);
+  const take = Math.min(getBonus(id), Math.max(0, Math.floor(Number(n) || 0)));
+  if (take > 0) {
+    stmt('UPDATE users SET bonus_stars = bonus_stars - ? WHERE id=?').run(take, id);
+  }
+  return take;
+}
+
+/** Реф-сводка юзера: {count:ref_count, bonus:bonus_stars, referredBy}. */
+function refInfo(userId) {
+  const row = stmt('SELECT ref_count, bonus_stars, referred_by FROM users WHERE id=?').get(
+    Number(userId)
+  );
+  return {
+    count: row ? Number(row.ref_count) || 0 : 0,
+    bonus: row ? Number(row.bonus_stars) || 0 : 0,
+    referredBy: row && row.referred_by != null ? Number(row.referred_by) : null,
+  };
+}
+
+/**
+ * Атрибутировать приглашение (SPEC-REFERRAL §3). Всё в ОДНОЙ транзакции.
+ * credited=true (пригласившему +REF_BONUS_STARS бонуса, ref_count++, newUser.referred_by=inviter)
+ * ТОЛЬКО если: inviterId!=newUserId; оба id валидны; у newUser ещё нет referred_by; newUser «новый»
+ * (нет оплаченных/gift заказов). Иначе {credited:false, reason:'self'|'already'|'not_new'|'no_inviter'}.
+ */
+function attributeReferral(newUserId, inviterId) {
+  const newId = Number(newUserId);
+  const invId = Number(inviterId);
+  if (!Number.isInteger(newId) || newId <= 0 || !Number.isInteger(invId) || invId <= 0) {
+    return { credited: false, reason: 'no_inviter' };
+  }
+  if (invId === newId) {
+    return { credited: false, reason: 'self' };
+  }
+  const bonus = Math.max(0, Math.floor(Number(config.REF_BONUS_STARS) || 0));
+  const tx = db.transaction(() => {
+    // уже реферился? (referred_by проставлен один раз) → повтор не проходит
+    const nu = stmt('SELECT referred_by FROM users WHERE id=?').get(newId);
+    if (nu && nu.referred_by != null) {
+      return { credited: false, reason: 'already' };
+    }
+    // «новый» = нет оплаченных/gift заказов (существующего покупателя не приглашаем)
+    const hasOrders = stmt(
+      `SELECT 1 AS x FROM orders WHERE user_id=? AND status IN ('paid','gift') LIMIT 1`
+    ).get(newId);
+    if (hasOrders) {
+      return { credited: false, reason: 'not_new' };
+    }
+    const t = now();
+    // строка пригласившего — создать при отсутствии (не трогаем существующие поля)
+    stmt(
+      `INSERT INTO users(id, first_seen, last_seen) VALUES(?,?,?)
+       ON CONFLICT(id) DO NOTHING`
+    ).run(invId, t, t);
+    // newUser.referred_by = inviter (строку создаём/обновляем, first_seen не перетираем)
+    stmt(
+      `INSERT INTO users(id, referred_by, first_seen, last_seen) VALUES(?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET referred_by=excluded.referred_by`
+    ).run(newId, invId, t, t);
+    // начислить пригласившему бонус и счётчик приглашённых
+    stmt(
+      'UPDATE users SET bonus_stars = COALESCE(bonus_stars,0) + ?, ref_count = COALESCE(ref_count,0) + 1 WHERE id=?'
+    ).run(bonus, invId);
+    return { credited: true, reason: 'ok' };
+  });
+  return tx();
+}
+
+/** Топ рефереров (SPEC-REFERRAL §3) — для /admin. [{id,username,ref_count,bonus_stars}]. */
+function refLeaders(limit) {
+  let lim = Math.floor(Number(limit));
+  if (!Number.isFinite(lim) || lim <= 0) lim = 10;
+  if (lim > 100) lim = 100;
+  return stmt(
+    `SELECT id, username, ref_count, bonus_stars FROM users
+      WHERE ref_count > 0 ORDER BY ref_count DESC, bonus_stars DESC, id ASC LIMIT ?`
+  ).all(lim);
 }
 
 /* ─────────────── qtyMap: нормализация и расчёт (SPEC-QTY §1/§3) ─────────────── */
@@ -268,31 +396,39 @@ function computeQtyCost(input) {
 }
 
 /**
- * Единый ЧИСТЫЙ расчёт цены заказа со скидкой (SPEC-QTY §3, SPEC-FREE §7b) —
+ * Единый ЧИСТЫЙ расчёт цены заказа со скидкой (SPEC-QTY §3, SPEC-FREE §7b, SPEC-REFERRAL §4) —
  * для отображения/превью (бот shopView, mini app). НИЧЕГО не списывает.
- * quoteOrder(userId, qtyMap) ->
- *   {base, extra, totalCost, regionsCount, freeAvail, freeUsed, discount, stars, fullyFree, servers}
+ * Порядок скидок: сначала free-регионы гасят base, затем бонус-звёзды гасят остаток.
+ * quoteOrder(userId, qtyMap) -> {base, extra, totalCost, regionsCount, servers,
+ *   freeAvail, freeUsed, discount(=discountFree), discountFree, bonusAvail, bonusUsed, stars, fullyFree}
  *   qtyMap = {iso:count} | массив ISO (каждый count=1).
- *   freeUsed = min(getFree, regionsCount); discount = freeUsed*base;
- *   stars = max(0, totalCost - discount); fullyFree = stars===0 && regionsCount>0.
+ *   freeUsed = min(getFree, regionsCount); discountFree = freeUsed*base;
+ *   afterFree = max(0, totalCost - discountFree); bonusUsed = min(getBonus, afterFree);
+ *   stars = afterFree - bonusUsed; fullyFree = stars===0 && regionsCount>0.
  */
 function quoteOrder(userId, qtyMap) {
   const c = computeQtyCost(qtyMap); // валидация (бросит Error при нарушении)
   const freeAvail = getFree(userId);
   const freeUsed = Math.min(freeAvail, c.regionsCount);
-  const discount = freeUsed * c.base;
-  const stars = Math.max(0, c.totalCost - discount);
+  const discountFree = freeUsed * c.base;
+  const afterFree = Math.max(0, c.totalCost - discountFree);
+  const bonusAvail = getBonus(userId);
+  const bonusUsed = Math.min(bonusAvail, afterFree);
+  const stars = afterFree - bonusUsed;
   return {
     base: c.base,
     extra: c.extra,
     totalCost: c.totalCost,
     regionsCount: c.regionsCount,
+    servers: c.servers,
     freeAvail,
     freeUsed,
-    discount,
+    discount: discountFree, // совместимость (SPEC-QTY §3): discount == free-часть скидки
+    discountFree,
+    bonusAvail,
+    bonusUsed,
     stars,
     fullyFree: stars === 0 && c.regionsCount > 0,
-    servers: c.servers,
   };
 }
 
@@ -302,25 +438,33 @@ function quoteOrder(userId, qtyMap) {
  * free СРАЗУ, в ОДНОЙ транзакции, и возвращает по-настоящему применённое.
  * Валидация qtyMap — ДО транзакции: ошибка не списывает free. Звать только
  * В МОМЕНТ создания заказа.
- * reserveOrder(userId, qtyMap) ->
- *   {base, extra, totalCost, regionsCount, freeUsed, discount, stars, fullyFree, servers}
+ * Списывает И free (consumeFree) И бонус-звёзды (consumeBonus) по фактически доступному,
+ * пересчитывает stars по реально применённому. Порядок скидок: free гасит base, затем бонус —
+ * остаток (SPEC-REFERRAL §4). Возвращает то же, что quoteOrder, но без *Avail-полей.
+ * reserveOrder(userId, qtyMap) -> {base, extra, totalCost, regionsCount, servers,
+ *   freeUsed, discount(=discountFree), discountFree, bonusUsed, stars, fullyFree}
  */
 function reserveOrder(userId, qtyMap) {
-  const c = computeQtyCost(qtyMap); // валидация ДО транзакции (бросит → free не тронут)
+  const c = computeQtyCost(qtyMap); // валидация ДО транзакции (бросит → free/бонус не тронуты)
   const tx = db.transaction(() => {
     const freeUsed = consumeFree(userId, Math.min(getFree(userId), c.regionsCount));
-    const discount = freeUsed * c.base;
-    const stars = Math.max(0, c.totalCost - discount);
+    const discountFree = freeUsed * c.base;
+    const afterFree = Math.max(0, c.totalCost - discountFree);
+    // бонус гасит остаток; consumeBonus сам клампит до доступного и возвращает списанное
+    const bonusUsed = consumeBonus(userId, afterFree);
+    const stars = Math.max(0, afterFree - bonusUsed);
     return {
       base: c.base,
       extra: c.extra,
       totalCost: c.totalCost,
       regionsCount: c.regionsCount,
+      servers: c.servers,
       freeUsed,
-      discount,
+      discount: discountFree,
+      discountFree,
+      bonusUsed,
       stars,
       fullyFree: stars === 0 && c.regionsCount > 0,
-      servers: c.servers,
     };
   });
   return tx();
@@ -639,9 +783,10 @@ function aliveStats() {
 /* ───────────────────── orders ───────────────────── */
 
 /**
- * createOrder({userId, regions, stars, status='pending', days, freeApplied, chargeId, qty}) -> {id, token}
+ * createOrder({userId, regions, stars, status='pending', days, freeApplied, bonusApplied, chargeId, qty}) -> {id, token}
  * Для status 'paid'/'gift' сразу проставляются paid_at и expires_at (now + days*86400).
- * freeApplied (int, default 0) → orders.free_applied; chargeId (напр. 'FREE') → orders.charge_id.
+ * freeApplied (int, default 0) → orders.free_applied; bonusApplied (int, default 0, SPEC-REFERRAL §3)
+ * → orders.bonus_applied; chargeId (напр. 'FREE') → orders.charge_id.
  * qty ({iso:count} | Map | JSON-строка) → orders.qty (JSON); отсутствует → NULL (SPEC-QTY §3).
  */
 function createOrder(opts) {
@@ -653,6 +798,7 @@ function createOrder(opts) {
   const paidNow = status === 'paid' || status === 'gift';
   const regionsJson = typeof o.regions === 'string' ? o.regions : JSON.stringify(o.regions || []);
   const freeApplied = Math.max(0, Math.floor(Number(o.freeApplied) || 0));
+  const bonusApplied = Math.max(0, Math.floor(Number(o.bonusApplied) || 0));
   const chargeId = o.chargeId == null ? null : String(o.chargeId);
 
   // qty: {iso:count} → JSON; Map → объект → JSON; строка — как есть; пусто → NULL.
@@ -668,8 +814,8 @@ function createOrder(opts) {
   }
 
   const info = stmt(
-    `INSERT INTO orders(user_id, regions, stars, status, token, charge_id, created_at, paid_at, expires_at, free_applied, qty)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO orders(user_id, regions, stars, status, token, charge_id, created_at, paid_at, expires_at, free_applied, qty, bonus_applied)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     Number(o.userId) || 0,
     regionsJson,
@@ -681,7 +827,8 @@ function createOrder(opts) {
     paidNow ? t : null,
     paidNow ? t + days * 86400 : null,
     freeApplied,
-    qtyJson
+    qtyJson,
+    bonusApplied
   );
   return { id: Number(info.lastInsertRowid), token };
 }
@@ -898,6 +1045,13 @@ module.exports = {
   consumeFree,
   usersWithFree,
   findUserByUsername,
+  getBonus,
+  setBonus,
+  addBonus,
+  consumeBonus,
+  refInfo,
+  attributeReferral,
+  refLeaders,
   quoteOrder,
   reserveOrder,
   getSetting,

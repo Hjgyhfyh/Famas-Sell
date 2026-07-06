@@ -217,6 +217,11 @@ body.theming, body.theming * {
 /* при стекле сохраняем фирменную dashed-обводку акцентом (глушим glass-line) */
 :root[data-glass="1"] .freebadge.gl { border-color: var(--accent); border-style: dashed; }
 
+/* SPEC-REFERRAL: бейдж бонус-звёзд — та же пилюля-«купон», но кликабельная (тап → «Друзья») */
+.bonusbadge { position: relative; cursor: pointer; transition: transform .15s ease, color .15s ease; }
+.bonusbadge::before { content: ''; position: absolute; inset: -4px 0; border-radius: 999px; } /* тап-зона ≥44px */
+.bonusbadge:active { transform: scale(.97); }
+
 /* ── заголовки секций ── */
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 18px 10px; }
 .section-head.tall { padding-top: 22px; }
@@ -442,6 +447,48 @@ body.theming, body.theming * {
 .help-actions .btn { flex: none; }
 .tabpane .fine.center { padding: 16px 26px 0; }
 
+/* ── друзья: реф-программа (SPEC-REFERRAL) ── */
+.refwrap { padding: 0 18px; display: flex; flex-direction: column; gap: 10px; }
+.refcard {
+  background-color: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  padding: 24px 18px 18px; text-align: center;
+  animation: fadeUp .34s var(--ease) backwards;
+}
+.ref-glyph { font-size: 36px; line-height: 1; margin-bottom: 10px; animation: refFloat 3.6s ease-in-out infinite; }
+@keyframes refFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+.ref-title { font-size: 23px; font-weight: 400; letter-spacing: .04em; }
+.ref-sub { font-style: italic; color: var(--muted); font-size: 13px; margin-top: 7px; text-wrap: balance; }
+/* статы-«купоны»: приглашено / бонус */
+.ref-stats { display: flex; gap: 10px; margin: 18px 0 12px; }
+.ref-stat {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  background: var(--bg2); border: 1px dashed var(--border); border-radius: var(--r-md);
+  padding: 13px 8px 11px;
+}
+.rs-num { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.rs-lbl { color: var(--dim); }
+/* моно-бокс реф-ссылки: dashed-акцент как у купона, тап целиком = копировать */
+.ref-linkbox {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg2); border: 1px dashed var(--accent); border-radius: var(--r-md);
+  padding: 14px; min-height: 46px;
+  cursor: pointer; text-align: left; user-select: none; -webkit-user-select: none;
+  transition: transform .15s ease, background-color .15s ease;
+}
+.ref-linkbox:active { transform: scale(.98); }
+.ref-link { flex: 1; min-width: 0; font-size: 11px; letter-spacing: .02em; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ref-linkbox svg { width: 15px; height: 15px; flex: none; color: var(--muted); }
+.ref-actions { display: flex; gap: 8px; margin-top: 12px; }
+/* блок «как это работает» — переиспользует шаги .hs из помощи */
+.ref-how {
+  background-color: var(--card); border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 15px 16px 16px; color: var(--muted); font-size: 12px; line-height: 1.75;
+  animation: fadeUp .34s var(--ease) .06s backwards;
+}
+.rh-title { letter-spacing: .18em; margin-bottom: 6px; }
+
 /* ── панель оплаты ── */
 .paybar {
   position: fixed; left: 0; right: 0; bottom: calc(var(--tabH) + var(--safe) - 1px); z-index: 110;
@@ -454,6 +501,8 @@ body.theming, body.theming * {
 .bar-in { max-width: 640px; margin: 0 auto; display: flex; align-items: center; gap: 12px; padding: 11px 16px; }
 .pinfo { flex: 1; min-width: 0; }
 .pi-top { color: var(--dim); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* SPEC-REFERRAL: строка бонуса в панели — баланс и применённая скидка */
+.pi-bonus { color: var(--muted); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pi-sum { color: var(--text); font-size: 17px; letter-spacing: .04em; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pi-sum .pi-lbl { font-size: 10px; color: var(--dim); letter-spacing: .1em; }
 .pi-sum b { font-weight: 700; }
@@ -484,9 +533,9 @@ body.theming, body.theming * {
   padding-bottom: var(--safe);
 }
 .tabs-in { position: relative; max-width: 640px; margin: 0 auto; display: flex; }
-/* индикатор: невидимая треть + центрированная пилюля внутри */
+/* индикатор: невидимая четверть (4 вкладки, SPEC-REFERRAL) + центрированная пилюля внутри */
 .tab-ind {
-  position: absolute; top: 0; left: 0; width: 33.3333%; height: 3px;
+  position: absolute; top: 0; left: 0; width: 25%; height: 3px;
   transition: transform .3s var(--ease); will-change: transform; pointer-events: none;
 }
 .tab-ind::after {
@@ -630,6 +679,10 @@ body.theming, body.theming * {
   .region.on:hover { border-color: var(--accent); }
   .region.prev:hover { transform: none; box-shadow: none; border-color: var(--accent); }
   .keycard:hover { border-color: var(--muted); }
+  .bonusbadge:hover { color: var(--text); transform: translateY(-1px); }
+  .bonusbadge:hover:active { transform: scale(.97); }
+  .ref-linkbox:hover { background-color: var(--card2); }
+  .ref-linkbox:hover svg { color: var(--text); }
   .btn.secondary:hover, .btn.ghost:hover { border-color: var(--muted); color: var(--text); }
   .btn.accent:not(:disabled):hover, .paybtn:hover:not(:disabled) { transform: translateY(-1px); }
   .tabbtn:hover { color: var(--text); }
@@ -653,5 +706,5 @@ body.theming, body.theming * {
   }
   /* спиннер оплаты — индикатор состояния, оставляем живым */
   .pb-spin { animation-duration: .7s !important; }
-  .bl, .dot, .skel::after { animation: none !important; }
+  .bl, .dot, .skel::after, .ref-glyph { animation: none !important; }
 }

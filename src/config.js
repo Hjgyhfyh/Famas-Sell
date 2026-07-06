@@ -63,6 +63,9 @@ const config = {
   // каждый следующий сервер той же страны = +extra. Дефолт 10⭐, меняется через /admin.
   EXTRA_STARS: envNum('EXTRA_STARS', 10),
   DEFAULT_SUB_DAYS: envNum('DEFAULT_SUB_DAYS', 30),
+  // SPEC-REFERRAL §1: бонус-звёзды за каждого приглашённого НОВОГО пользователя.
+  // Копятся у пригласившего (users.bonus_stars) и тратятся скидкой на покупки. Дефолт 10.
+  REF_BONUS_STARS: envNum('REF_BONUS_STARS', 10),
   DB_PATH: envStr('DB_PATH', './data/famas.db'),
   SKIP_BOT: /^(1|true|yes)$/i.test(envStr('SKIP_BOT', '0')) ? 1 : 0,
   BOT_USERNAME: envStr('BOT_USERNAME', 'FamasSellerBot').replace(/^@/, ''),

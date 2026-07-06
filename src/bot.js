@@ -30,6 +30,11 @@ const APP_URL = `${config.PUBLIC_BASE}/app/`;
 const ADMIN_URL = `${config.PUBLIC_BASE}/admin/`;
 const BOT_URL = `https://t.me/${config.BOT_USERNAME}`;
 
+/** Персональная реф-ссылка юзера (SPEC-REFERRAL §5): deep-link start=ref<userId>. */
+function refLink(userId) {
+  return `https://t.me/${config.BOT_USERNAME}?start=ref${userId}`;
+}
+
 /* ── мелкие утилиты ───────────────────────────────────────────── */
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -71,6 +76,30 @@ function msgOpts(kb) {
 
 function isPrivateCtx(ctx) {
   return !ctx.chat || ctx.chat.type === 'private';
+}
+
+/**
+ * Дефолтный ответ на неизвестную команду (SPEC-REFERRAL §5B). Единый helper: им отвечают и
+ * catch-all по тексту, и админ-команды (/admin, /free, /refund) для НЕ-админов — чтобы их
+ * существование не палилось (твинк получает такой же «Не понял…», а не тишину/отказ).
+ * Как и прежний catch-all, в группах молчим (там неизвестная команда и так игнорится).
+ */
+async function unknownCommandReply(ctx) {
+  if (!isPrivateCtx(ctx)) return;
+  try {
+    await ctx.reply(
+      [
+        BRAND,
+        THIN,
+        'Не понял. Вот что я умею:',
+        '/vpn — купить ключ · /profile — мои ключи',
+        '/help — как подключить · /support — поддержка',
+      ].join('\n'),
+      msgOpts()
+    );
+  } catch (e) {
+    /* не критично */
+  }
 }
 
 function userLabel(from) {
@@ -222,6 +251,8 @@ function mainMenuKb(isPrivate) {
     .text('👤 Профиль', 'profile')
     .text('❓ Помощь', 'help')
     .row()
+    .text('🎁 Пригласить', 'ref')
+    .row()
     .url('💬 Поддержка', SUPPORT_URL);
   return kb;
 }
@@ -338,15 +369,20 @@ function shopView(userId) {
 
   const freeAvail = (() => { try { return db.getFree(userId); } catch (e) { return 0; } })();
   if (freeAvail > 0) kb.text(`🎁 Бесплатных регионов: ${freeAvail}`, 'noop').row();
+  const bonusAvail = (() => { try { return db.getBonus(userId); } catch (e) { return 0; } })();
+  if (bonusAvail > 0) kb.text(`🎁 Бонус: ${bonusAvail} ⭐`, 'noop').row();
 
-  // итог — единый расчёт через quoteOrder (чистый, без списания)
+  // итог — единый расчёт через quoteOrder (чистый, без списания); учитывает free И бонус
   let q = null;
   if (selMap.size > 0) {
     try { q = db.quoteOrder(userId, Object.fromEntries(selMap)); } catch (e) { q = null; }
   }
   if (q) {
     let totalLabel = `▸ Стран: ${q.regionsCount} · Серверов: ${q.servers} · Итого: ${q.stars} ⭐`;
-    if (q.freeUsed > 0) totalLabel += ` (−${q.freeUsed} бесплатно)`;
+    const disc = [];
+    if (q.freeUsed > 0) disc.push(`−${q.freeUsed} бесплатно`);
+    if (q.bonusUsed > 0) disc.push(`−${q.bonusUsed}⭐ бонус`);
+    if (disc.length) totalLabel += ` (${disc.join(', ')})`;
     kb.text(totalLabel, 'noop').row();
     kb.text('✦ Выбрать всё', 'all').text('✕ Сброс', 'clr').row();
     if (q.fullyFree) kb.text('🎁 ПОЛУЧИТЬ БЕСПЛАТНО', 'pay');
@@ -372,6 +408,9 @@ function shopView(userId) {
     ...(freeAvail > 0
       ? ['', `🎁 У тебя ${regionsWord(freeAvail)} бесплатно — спишутся при оформлении.`]
       : []),
+    ...(bonusAvail > 0
+      ? ['', `🎁 Бонус: ${bonusAvail} ⭐ — спишется в счёт оплаты.`]
+      : []),
   ].join('\n');
   return { text, kb };
 }
@@ -385,12 +424,19 @@ function profileView(from) {
   }
   const meta = regionMetaMap();
   const t = now();
+  let refI = { count: 0, bonus: 0, referredBy: null };
+  try {
+    refI = db.refInfo(from.id);
+  } catch (e) {
+    console.error('[bot] refInfo:', errText(e));
+  }
   const lines = [
     '👤 ПРОФИЛЬ',
     LINE,
     `Имя: ${esc(from.first_name || '—')}${from.username ? ' · @' + esc(from.username) : ''}`,
     `ID: <code>${from.id}</code>`,
     `Покупок: ${orders.length}`,
+    `🎁 Бонус: ${refI.bonus} ⭐ · Приглашено: ${refI.count}`,
   ];
   const kb = new InlineKeyboard();
   if (orders.length) {
@@ -411,8 +457,44 @@ function profileView(from) {
   } else {
     lines.push(THIN, 'Покупок пока нет — начни с /vpn ⁂');
   }
-  kb.text('🔐 Купить ключ', 'shop');
+  kb.text('🎁 Пригласить', 'ref').text('🔐 Купить ключ', 'shop');
   return { text: lines.join('\n'), kb };
+}
+
+/** Карточка реф-программы (SPEC-REFERRAL §5): ссылка, приглашено/бонус, пояснение, share. */
+function refView(from) {
+  let info = { count: 0, bonus: 0, referredBy: null };
+  try {
+    info = db.refInfo(from.id);
+  } catch (e) {
+    console.error('[bot] refInfo:', errText(e));
+  }
+  const link = refLink(from.id);
+  const bonusStars = config.REF_BONUS_STARS;
+  const text = [
+    `${BRAND} · ПРИГЛАШАЙ ДРУЗЕЙ`,
+    LINE,
+    'Твоя личная ссылка-приглашение:',
+    `<code>${esc(link)}</code>`,
+    '(нажми — скопируется)',
+    '',
+    `Приглашено: ${info.count}`,
+    `Бонус: ${info.bonus} ⭐`,
+    THIN,
+    `+${bonusStars} ⭐ за каждого нового друга.`,
+    'Бонус копится и тратится на покупки —',
+    'позовёшь друзей, наберёшь на бесплатные серверы.',
+    LINE,
+  ].join('\n');
+  const shareText = 'Магазин VPN-ключей ⁂ моментальная выдача — заходи:';
+  const shareUrl =
+    'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(shareText);
+  const kb = new InlineKeyboard()
+    .url('🎁 Поделиться', shareUrl)
+    .row()
+    .text('👤 Профиль', 'profile')
+    .text('🔐 Купить ключ', 'shop');
+  return { text, kb };
 }
 
 function helpView(isPrivate) {
@@ -917,6 +999,7 @@ function registerCommandMenu(api) {
     { command: 'vpn', description: '🔐 Купить VPN-ключ: выбор регионов' },
     { command: 'catalog', description: '🛍 Каталог' },
     { command: 'profile', description: '👤 Профиль и мои ключи' },
+    { command: 'ref', description: '🎁 Пригласить друзей (+бонус)' },
     { command: 'help', description: '❓ Как это работает' },
     { command: 'support', description: '💬 Поддержка' },
     { command: 'paysupport', description: '⭐ Вопросы по оплате' },
@@ -971,7 +1054,57 @@ function createBot() {
   /* ── команды ── */
 
   bot.command('start', async (ctx) => {
+    // SPEC-REFERRAL §5: deep-link start=ref<userId>. На первом старте нового юзера начисляем
+    // бонус пригласившему. attributeReferral сам защищает от self/повтора/не-нового/битого id
+    // (проверяет referred_by и заказы — upsertUser в middleware этого не перетирает).
+    const payload = String(ctx.match || '').trim();
+    const m = /^ref(\d+)$/.exec(payload);
+    if (m && ctx.from && !ctx.from.is_bot) {
+      const inviterId = Number(m[1]);
+      try {
+        const res = db.attributeReferral(ctx.from.id, inviterId);
+        if (res && res.credited) {
+          // уведомить пригласившего (мог не открывать бота — глотаем)
+          try {
+            const info = db.refInfo(inviterId);
+            await ctx.api.sendMessage(
+              inviterId,
+              [
+                '🎉 По твоей ссылке пришёл новый пользователь!',
+                `+${config.REF_BONUS_STARS} ⭐ бонуса.`,
+                `Всего приглашено: ${info.count}, бонус: ${info.bonus} ⭐`,
+              ].join('\n'),
+              msgOpts()
+            );
+          } catch (e) {
+            /* пригласивший недоступен */
+          }
+          // мягко сообщить новичку
+          try {
+            await ctx.reply(
+              [
+                BRAND,
+                THIN,
+                'Ты пришёл по приглашению друга ⁂',
+                'Бонус пригласившего уже начислен — оформляй ключи.',
+              ].join('\n'),
+              msgOpts()
+            );
+          } catch (e) {
+            /* не критично */
+          }
+        }
+      } catch (e) {
+        console.error('[bot] attributeReferral:', errText(e));
+      }
+    }
     const v = startView(isPrivateCtx(ctx));
+    await ctx.reply(v.text, msgOpts(v.kb));
+  });
+
+  // SPEC-REFERRAL §5: карточка реф-программы (ссылка, приглашено/бонус, кнопка Поделиться).
+  bot.command('ref', async (ctx) => {
+    const v = refView(ctx.from);
     await ctx.reply(v.text, msgOpts(v.kb));
   });
 
@@ -1006,14 +1139,16 @@ function createBot() {
   });
 
   bot.command('admin', async (ctx) => {
-    if (!ctx.from || !isAdmin(ctx.from.id)) return; // тихий игнор
+    // SPEC-REFERRAL §5B: не-админу отвечаем как на неизвестную команду (не палим существование).
+    if (!ctx.from || !isAdmin(ctx.from.id)) return unknownCommandReply(ctx);
     const v = adminPanelView(undefined, isPrivateCtx(ctx));
     await ctx.reply(v.text, msgOpts(v.kb));
   });
 
   /* /free — раздача бесплатных регионов (только ADMIN_IDS, §4). */
   bot.command('free', async (ctx) => {
-    if (!ctx.from || !isAdmin(ctx.from.id)) return; // тихий игнор, как /admin
+    // SPEC-REFERRAL §5B: не-админу — «Не понял…» (как неизвестная команда), а не тишина.
+    if (!ctx.from || !isAdmin(ctx.from.id)) return unknownCommandReply(ctx);
     const arg = String(ctx.match || '').trim();
 
     // без аргументов — карточка со списком и форматом
@@ -1120,7 +1255,8 @@ function createBot() {
   });
 
   bot.command('refund', async (ctx) => {
-    if (!ctx.from || !isAdmin(ctx.from.id)) return; // тихий игнор
+    // SPEC-REFERRAL §5B: не-админу — «Не понял…» (как неизвестная команда), а не тишина.
+    if (!ctx.from || !isAdmin(ctx.from.id)) return unknownCommandReply(ctx);
     const arg = String(ctx.match || '').trim();
     if (!/^\d+$/.test(arg)) {
       await ctx.reply('Формат: <code>/refund &lt;order_id&gt;</code>', msgOpts());
@@ -1277,6 +1413,13 @@ function createBot() {
     await ctx.reply(v.text, msgOpts(v.kb));
   });
 
+  // ref (SPEC-REFERRAL §5) — новым сообщением: кнопка висит и на карточках выдачи/профиля.
+  bot.callbackQuery('ref', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const v = refView(ctx.from);
+    await ctx.reply(v.text, msgOpts(v.kb));
+  });
+
   bot.callbackQuery('noop', async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
   });
@@ -1421,9 +1564,10 @@ function createBot() {
         status: 'paid',
         days,
         freeApplied: q.freeUsed,
+        bonusApplied: q.bonusUsed,
         chargeId: 'FREE',
       });
-      // free уже списан атомарно в reserveOrder (§7b) — отдельный consumeFree тут не нужен.
+      // free и бонус уже списаны атомарно в reserveOrder (§7b/§4) — отдельного списания тут нет.
       selections.delete(uid); // корзина сыграла
       const order = db.getOrder(created.id);
       try {
@@ -1458,6 +1602,7 @@ function createBot() {
       status: 'pending',
       days,
       freeApplied: q.freeUsed,
+      bonusApplied: q.bonusUsed,
     });
     const meta = regionMetaMap();
     const flags = chosen.map((iso) => {
@@ -1468,6 +1613,7 @@ function createBot() {
     }).join(' ');
     let descr = `Регионы: ${flags} · ${daysWord(days)}`;
     if (q.freeUsed > 0) descr += ` · −${q.freeUsed} бесплатно`;
+    if (q.bonusUsed > 0) descr += ` · −${q.bonusUsed}⭐ бонус`;
     await sendStarsInvoice(
       ctx,
       cut(descr, 250),
@@ -1637,18 +1783,9 @@ function createBot() {
 
   /* ── подсказка на прочий текст (только личка) ── */
 
+  // Catch-all неизвестного текста/команд (SPEC-REFERRAL §5B) — через общий helper.
   bot.on('message:text', async (ctx) => {
-    if (!isPrivateCtx(ctx)) return;
-    await ctx.reply(
-      [
-        BRAND,
-        THIN,
-        'Не понял. Вот что я умею:',
-        '/vpn — купить ключ · /profile — мои ключи',
-        '/help — как подключить · /support — поддержка',
-      ].join('\n'),
-      msgOpts()
-    );
+    await unknownCommandReply(ctx);
   });
 
   /* ── глобальный перехват ошибок ── */

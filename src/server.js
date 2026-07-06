@@ -369,6 +369,7 @@ function createServer(botApi) {
         status: 'paid',
         days,
         freeApplied: q.freeUsed,
+        bonusApplied: q.bonusUsed,
         chargeId: 'FREE'
       });
       if (!created || !created.id) {
@@ -395,7 +396,9 @@ function createServer(botApi) {
         page: subscription.pageUrl(created.token),
         sub: subscription.subUrl(created.token),
         servers: q.servers, // Σqty
-        regions: isos
+        regions: isos,
+        freeApplied: q.freeUsed,
+        bonusApplied: q.bonusUsed
       });
     }
 
@@ -407,7 +410,8 @@ function createServer(botApi) {
       stars: q.stars,
       status: 'pending',
       days,
-      freeApplied: q.freeUsed
+      freeApplied: q.freeUsed,
+      bonusApplied: q.bonusUsed
     });
     if (!created || !created.id) {
       return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
@@ -459,7 +463,8 @@ function createServer(botApi) {
       orderId: created.id,
       stars: q.stars,
       servers: q.servers, // Σqty
-      freeApplied: q.freeUsed
+      freeApplied: q.freeUsed,
+      bonusApplied: q.bonusUsed
     });
   }));
 
@@ -496,7 +501,27 @@ function createServer(botApi) {
       logErr('me/getFree', e);
     }
 
-    res.json({ ok: true, orders: orders, free: free });
+    // SPEC-REFERRAL §6: бонус-баланс + реф-сводка (для реф-блока mini app).
+    let bonus = 0;
+    try {
+      bonus = db.getBonus(auth.user.id);
+    } catch (e) {
+      logErr('me/getBonus', e);
+    }
+    let refI = { count: 0, bonus: 0, referredBy: null };
+    try {
+      refI = db.refInfo(auth.user.id);
+    } catch (e) {
+      logErr('me/refInfo', e);
+    }
+    const ref = {
+      count: refI.count,
+      bonus: refI.bonus,
+      referredBy: refI.referredBy,
+      link: 'https://t.me/' + config.BOT_USERNAME + '?start=ref' + auth.user.id,
+    };
+
+    res.json({ ok: true, orders: orders, free: free, bonus: bonus, ref: ref });
   });
 
   /* GET /famas/api/key/:token — данные ключа для страницы товара (key.html). */

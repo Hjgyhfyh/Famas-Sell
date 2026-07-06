@@ -2,6 +2,7 @@
    FAMAS STORE ⁂ — mini app · ванильный JS, без зависимостей
    API: /famas/api (§9 SPEC) · дизайн v2 «FAMAS ROUNDED» (SPEC-V2)
    SPEC-QTY: количество серверов на регион + 3 сортировки витрины
+   SPEC-REFERRAL: вкладка «Друзья» (реф-ссылка) + бонус-звёзды в оплате
    ═══════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
@@ -22,6 +23,8 @@
   var GLASS_KEY = 'famas_glass';
   var SORT_KEY = 'famas_sort';   // SPEC-QTY: выбранная сортировка витрины
   var THEME_BG = { bw: '#000000', dracula: '#191A21' };
+  /* SPEC-REFERRAL: текст к share-ссылке (t.me/share/url?url=...&text=...) */
+  var REF_SHARE_TEXT = '⁂ FAMAS STORE — магазин VPN-ключей: моментальная выдача, оплата звёздами Telegram. Заходи по моей ссылке!';
 
   /* ── состояние ───────────────────────────────────────────────── */
   var S = {
@@ -39,6 +42,8 @@
     staggered: false,   // stagger-анимация только при первом рендере
     orders: null,
     free: 0,            // SPEC-FREE: баланс бесплатных регионов (поле free из /api/me)
+    bonus: 0,           // SPEC-REFERRAL: бонус-звёзды-скидка (поле bonus из /api/me)
+    ref: { count: 0, link: '' }, // SPEC-REFERRAL: приглашено + личная реф-ссылка (ref из /api/me)
     tab: 'shop',
     payBusy: false,
     successPage: '',
@@ -60,7 +65,11 @@
   var elPaySum = $('paySum');
   var elPayBtn = $('payBtn');
   var elPayLabel = elPayBtn.querySelector('.pb-label');
+  var elPayBonus = $('payBonus');
   var elFreeBadge = $('freeBadge');
+  var elBonusBadge = $('bonusBadge');
+  var elRefWrap = $('refWrap');
+  var elRefEmpty = $('refEmpty');
   var elKeys = $('keysList');
   var elToast = $('toast');
   var elErrbar = $('errbar');
@@ -148,6 +157,10 @@
   function openTgLink(url) {
     try { if (tg && typeof tg.openTelegramLink === 'function') { tg.openTelegramLink(url); return; } } catch (e) { /* noop */ }
     window.open(url, '_blank', 'noopener');
+  }
+  /* SPEC-V2: все анимации — с фолбэком prefers-reduced-motion (FLIP, каунт-ап) */
+  function reducedMotion() {
+    try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
   }
 
   /* фолбэк SVG-флагов: error не всплывает, ловим на capture-фазе */
@@ -527,8 +540,7 @@
        иначе он снимет .flip посреди новой анимации и карточки прыгнут */
     if (flipTimer) { clearTimeout(flipTimer); flipTimer = null; }
     for (var c = 0; c < cards.length; c++) cards[c].classList.remove('flip');
-    var reduce = false;
-    try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { /* noop */ }
+    var reduce = reducedMotion();
     var byIso = {};
     var first = {};
     for (var i = 0; i < cards.length; i++) {
@@ -651,6 +663,65 @@
     }
   }
 
+  /* ── реферальная программа (SPEC-REFERRAL) ───────────────────── */
+  /* bonus — только отображение и предрасчёт: итог ВСЕГДА считает сервер
+     (quoteOrder/reserveOrder), локальному числу не доверяем. */
+  function setBonusBalance(n) {
+    n = Math.max(0, Math.floor(Number(n) || 0));
+    if (n === S.bonus) { renderBonusBadge(); return; }
+    S.bonus = n;
+    renderBonusBadge();
+    renderFriends();
+    updatePaybar(false);
+  }
+  function renderBonusBadge() {
+    if (!elBonusBadge) return;
+    if (S.bonus > 0) {
+      elBonusBadge.textContent = '⭐ бонус: ' + fmtNum(S.bonus) + ' — скидка на покупку';
+      elBonusBadge.hidden = false;
+    } else {
+      elBonusBadge.hidden = true;
+    }
+  }
+  /* личная реф-ссылка: приоритет — ref.link из /api/me; фолбэк — сборка
+     из id юзера Telegram (тот же формат t.me/<bot>?start=ref<id>, §5 SPEC-REFERRAL) */
+  function refLink() {
+    if (S.ref.link) return S.ref.link;
+    try {
+      var u = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+      if (u && u.id) return BOT_URL + '?start=ref' + u.id;
+    } catch (e) { /* noop */ }
+    return '';
+  }
+  /* вкладка «Друзья»: статы + ссылка; без initData — пустое состояние.
+     Все данные вставляются через textContent — XSS-safe. */
+  function renderFriends() {
+    if (!elRefWrap || !elRefEmpty) return;
+    var authed = !!initData;
+    elRefWrap.hidden = !authed;
+    elRefEmpty.hidden = authed;
+    if (!authed) return;
+    var elCount = $('refCount');
+    var elBonus = $('refBonus');
+    var elLink = $('refLinkText');
+    if (elCount) elCount.textContent = fmtNum(S.ref.count);
+    if (elBonus) elBonus.textContent = fmtNum(S.bonus) + ' ⭐';
+    var link = refLink();
+    if (elLink) elLink.textContent = link || 'загрузка…';
+  }
+  function copyRefLink() {
+    var link = refLink();
+    if (link) copyText(link);
+    else showErr('ссылка ещё загружается — попробуй через секунду');
+  }
+  function shareRefLink() {
+    var link = refLink();
+    if (!link) { showErr('ссылка ещё загружается — попробуй через секунду'); return; }
+    haptic('medium');
+    openTgLink('https://t.me/share/url?url=' + encodeURIComponent(link) +
+      '&text=' + encodeURIComponent(REF_SHARE_TEXT));
+  }
+
   /* ── выбор, количество и панель оплаты (SPEC-QTY) ────────────── */
   /* синхронизация карточки без пересборки флага (img не мигает):
      класс/aria + только низ (.r-foot: подсказка ↔ степпер) */
@@ -733,7 +804,12 @@
   function animateSum(to) {
     var from = S.prevSum;
     S.prevSum = to;
-    if (from === to) { elPaySum.textContent = fmtNum(to) + ' ⭐'; return; }
+    /* prefers-reduced-motion: каунт-ап заменяется мгновенным значением (SPEC-V2) */
+    if (from === to || reducedMotion()) {
+      if (sumAnim) { cancelAnimationFrame(sumAnim); sumAnim = null; }
+      elPaySum.textContent = fmtNum(to) + ' ⭐';
+      return;
+    }
     var t0 = null;
     var dur = 320;
     if (sumAnim) cancelAnimationFrame(sumAnim);
@@ -752,13 +828,27 @@
     var n = st.countries;
     /* SPEC-QTY §1 (предрасчёт UI — истину считает сервер в quoteOrder/reserveOrder):
        totalCost = Σ(base + extra*(q-1)) = n*base + (servers-n)*extra;
-       SPEC-FREE: free гасит base у первых min(free, стран) регионов, extra остаётся платным */
+       SPEC-FREE: free гасит base у первых min(free, стран) регионов, extra остаётся платным;
+       SPEC-REFERRAL §4: бонус-звёзды добивают остаток ПОСЛЕ free —
+       payable = max(0, totalCost − freeUsed*base − bonusUsed) */
     var totalCost = n * S.price + Math.max(0, st.servers - n) * S.extra;
     var freeUsed = Math.min(S.free, n);
-    var total = Math.max(0, totalCost - freeUsed * S.price);
+    var afterFree = Math.max(0, totalCost - freeUsed * S.price);
+    var bonusUsed = Math.min(S.bonus, afterFree);
+    var total = afterFree - bonusUsed;
     var line = 'СТРАН: ' + n + ' · СЕРВЕРОВ: ' + st.servers;
     if (freeUsed > 0 && n > 0) line += ' · ' + freeUsed + ' БЕСПЛАТНО';
     elPayLine.textContent = line;
+    /* строка бонуса: баланс + фактически применённая скидка */
+    if (elPayBonus) {
+      if (S.bonus > 0 && n > 0) {
+        elPayBonus.textContent = 'БОНУС: ' + fmtNum(S.bonus) + ' ⭐' +
+          (bonusUsed > 0 ? ' · ПРИМЕНЕНО −' + fmtNum(bonusUsed) + ' ⭐' : '');
+        elPayBonus.hidden = false;
+      } else {
+        elPayBonus.hidden = true;
+      }
+    }
     if (instant) {
       /* мгновенное обновление гасит бегущий каунт-ап, иначе его хвост
          перезапишет только что выставленную сумму устаревшим значением */
@@ -833,11 +923,14 @@
               showSuccess();
             } else if (status === 'cancelled') {
               toast('оплата отменена');
+              refreshBalances(); /* §7b: free/bonus зарезервированы при создании — бейджи и предпросчёт освежить */
             } else if (status === 'failed') {
               hapticNotify('error');
               showErr('оплата не прошла — попробуй ещё раз');
+              refreshBalances();
             } else {
               toast('платёж обрабатывается…');
+              refreshBalances();
             }
           });
         } else {
@@ -866,8 +959,24 @@
       .then(function (d) {
         if (!d.ok) throw new Error('bad payload');
         if (typeof d.free !== 'undefined') setFreeBalance(d.free); /* SPEC-FREE: свежий баланс */
+        /* SPEC-REFERRAL: бонус-звёзды + реф-статистика (bonus, ref{count,link}) */
+        var ref = (d.ref && typeof d.ref === 'object') ? d.ref : null;
+        if (ref) {
+          S.ref.count = Math.max(0, Math.floor(Number(ref.count) || 0));
+          if (typeof ref.link === 'string' && ref.link) S.ref.link = ref.link;
+        }
+        var bonus = (typeof d.bonus !== 'undefined') ? d.bonus : (ref ? ref.bonus : undefined);
+        if (typeof bonus !== 'undefined') setBonusBalance(bonus);
+        renderFriends();
         return d.orders || [];
       });
+  }
+  /* тихая пересинхронизация балансов (free/bonus/реф) и кэша заказов с сервером.
+     Важно после ЗАКРЫТОГО инвойса: §7b — скидки списываются при СОЗДАНИИ заказа,
+     то есть после «отмены» балансы уже другие, и предпросчёт не должен врать. */
+  function refreshBalances() {
+    if (!initData) return;
+    fetchMe().then(function (orders) { S.orders = orders; }).catch(function () { /* noop: не критично */ });
   }
 
   /* opts.free=true — бесплатная выдача (SPEC-FREE): страница ключа уже
@@ -894,8 +1003,8 @@
     updateBackBtn();
     loadRegions(true); /* SPEC-QTY: тихо обновить витрину (популярность/счётчики) после сделки */
     if (S.successPage) {
-      /* ссылка уже есть — /api/me дёргаем только ради обновления free-баланса и списка */
-      fetchMe().then(function (orders) { S.orders = orders; }).catch(function () { /* noop */ });
+      /* ссылка уже есть — /api/me дёргаем только ради обновления балансов и списка */
+      refreshBalances();
     } else {
       pollSuccessPage(0);
     }
@@ -989,13 +1098,14 @@
   }
 
   /* ── вкладки ─────────────────────────────────────────────────── */
-  var TAB_IDX = { shop: 0, keys: 1, help: 2 };
+  var TAB_IDX = { shop: 0, keys: 1, friends: 2, help: 3 }; /* SPEC-REFERRAL: + «Друзья» */
   function switchTab(name) {
     if (!TAB_IDX.hasOwnProperty(name) || S.tab === name) return;
-    S.tab = name;
-    var panes = { shop: $('tab-shop'), keys: $('tab-keys'), help: $('tab-help') };
-    Object.keys(panes).forEach(function (k) { panes[k].hidden = k !== name; });
+    var panes = { shop: $('tab-shop'), keys: $('tab-keys'), friends: $('tab-friends'), help: $('tab-help') };
     var pane = panes[name];
+    if (!pane) return; /* null-гард: при кэше старого index.html вкладки «Друзья» может ещё не быть */
+    S.tab = name;
+    Object.keys(panes).forEach(function (k) { if (panes[k]) panes[k].hidden = k !== name; });
     pane.classList.remove('enter');
     void pane.offsetWidth; /* перезапуск анимации входа */
     pane.classList.add('enter');
@@ -1004,6 +1114,11 @@
     elTabInd.style.transform = 'translateX(' + (TAB_IDX[name] * 100) + '%)';
     window.scrollTo(0, 0);
     if (name === 'keys') loadKeys();
+    if (name === 'friends') {
+      /* SPEC-REFERRAL: рисуем из кэша сразу, счётчики тихо освежаем из /api/me */
+      renderFriends();
+      refreshBalances();
+    }
     updatePaybar(true);
     haptic('light');
   }
@@ -1149,6 +1264,28 @@
     });
     $('btnSupport').addEventListener('click', function () { openTgLink(SUPPORT_URL); });
 
+    /* SPEC-REFERRAL: «Друзья» — поделиться/копировать; бокс ссылки = тоже копия.
+       Новые узлы под null-гардом: пока живёт кэш старого index.html (static 10 мин),
+       их может не быть — падать всем bind() из-за этого нельзя. */
+    var btnRefShare = $('btnRefShare');
+    if (btnRefShare) btnRefShare.addEventListener('click', shareRefLink);
+    var btnRefCopy = $('btnRefCopy');
+    if (btnRefCopy) btnRefCopy.addEventListener('click', copyRefLink);
+    var refBox = $('refLinkBox');
+    if (refBox) {
+      refBox.addEventListener('click', copyRefLink);
+      refBox.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') { ev.preventDefault(); copyRefLink(); }
+      });
+    }
+    /* бейдж бонуса на витрине → вкладка «Друзья» (пригласи ещё) */
+    if (elBonusBadge) {
+      elBonusBadge.addEventListener('click', function () { switchTab('friends'); });
+      elBonusBadge.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') { ev.preventDefault(); switchTab('friends'); }
+      });
+    }
+
     /* настройки */
     $('btnSettings').addEventListener('click', openSheet);
     $('btnSettings2').addEventListener('click', openSheet);
@@ -1192,10 +1329,10 @@
     for (var i = 0; i < openPanels.length; i++) openPanels[i].style.maxHeight = 'none';
     loadRegions(false);
     updatePaybar(true);
-    /* SPEC-FREE: при старте берём free-баланс из /api/me (бейдж + пересчёт панели) */
-    if (initData) {
-      fetchMe().then(function (orders) { S.orders = orders; }).catch(function () { /* noop: бейдж не критичен */ });
-    }
+    /* SPEC-REFERRAL: первичный рендер «Друзей» (пустое состояние/фолбэк-ссылка до ответа API) */
+    renderFriends();
+    /* SPEC-FREE + SPEC-REFERRAL: при старте берём балансы (free, bonus, ref) из /api/me */
+    refreshBalances();
     /* живая строка доверия: тихий рефреш раз в 2 минуты + при возврате в апп */
     setInterval(function () {
       if (document.visibilityState === 'visible') loadRegions(true);
