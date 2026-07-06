@@ -647,6 +647,97 @@ function statsSummary() {
   return { users, ordersPaid, revenueStars, activeConfigs, regionsCount, salesToday };
 }
 
+/* ─────────────── админка «кто что купил» (SPEC-ADMIN §3) ─────────────── */
+
+/**
+ * Дополнительная сводка для админ-панели (SPEC-ADMIN §2). Аддитивно, ничего не меняет.
+ *   uniqueBuyers — DISTINCT user_id по выданным заказам (paid|gift);
+ *   ordersTotal  — всего выданных заказов (paid|gift);
+ *   freeActive   — сумма непотраченных бесплатных регионов по всем юзерам.
+ */
+function adminSummary() {
+  const uniqueBuyers = stmt(
+    `SELECT COUNT(DISTINCT user_id) AS c FROM orders WHERE status IN ('paid','gift')`
+  ).get().c;
+  const ordersTotal = stmt(
+    `SELECT COUNT(*) AS c FROM orders WHERE status IN ('paid','gift')`
+  ).get().c;
+  const freeActive = stmt('SELECT COALESCE(SUM(free_regions),0) AS s FROM users').get().s;
+  return {
+    uniqueBuyers: Number(uniqueBuyers) || 0,
+    ordersTotal: Number(ordersTotal) || 0,
+    freeActive: Number(freeActive) || 0,
+  };
+}
+
+/** Встречается ли userId среди пользователей ИЛИ заказов (гейт для аватар-прокси, SPEC-ADMIN §2). */
+function adminUserExists(userId) {
+  const id = Number(userId);
+  if (!Number.isInteger(id) || id <= 0) return false;
+  if (stmt('SELECT 1 AS x FROM users WHERE id=? LIMIT 1').get(id)) return true;
+  return !!stmt('SELECT 1 AS x FROM orders WHERE user_id=? LIMIT 1').get(id);
+}
+
+/**
+ * ordersForAdmin({sort,limit,offset,q}) -> {total, rows} (SPEC-ADMIN §3).
+ * Выборка выданных заказов (status IN ('paid','gift')) с JOIN users; маппинг в
+ * API-форму (kind/regions[]/servers/active) — в server.js. Ничего существующего не меняет.
+ *   sort:  'new' (дефолт) = COALESCE(paid_at,created_at) DESC; 'price' = stars DESC, id DESC.
+ *   q:     фильтр по username LIKE (без учёта регистра) или user_id (точное совпадение для числа).
+ *   limit: дефолт 50, максимум 200; offset: дефолт 0.
+ *   total: отдельный COUNT с тем же WHERE (без limit/offset).
+ * rows содержат сырые поля: id,user_id,username,first_name,regions,qty,stars,charge_id,status,
+ *   created_at,paid_at,expires_at,token.
+ */
+function ordersForAdmin(opts) {
+  const o = opts || {};
+  const sort = o.sort === 'price' ? 'price' : 'new';
+
+  let limit = Math.floor(Number(o.limit));
+  if (!Number.isFinite(limit) || limit <= 0) limit = 50;
+  if (limit > 200) limit = 200;
+
+  let offset = Math.floor(Number(o.offset));
+  if (!Number.isFinite(offset) || offset < 0) offset = 0;
+
+  const q = String(o.q == null ? '' : o.q).trim();
+
+  const where = [`o.status IN ('paid','gift')`];
+  const params = [];
+  if (q) {
+    // экранируем спецсимволы LIKE (\ % _), фильтруем по вхождению в username
+    const like = '%' + q.replace(/[\\%_]/g, '\\$&') + '%';
+    if (/^\d+$/.test(q)) {
+      where.push(`(u.username LIKE ? ESCAPE '\\' OR o.user_id = ?)`);
+      params.push(like, Number(q));
+    } else {
+      where.push(`u.username LIKE ? ESCAPE '\\'`);
+      params.push(like);
+    }
+  }
+  const whereSql = where.join(' AND ');
+  const orderSql =
+    sort === 'price'
+      ? 'o.stars DESC, o.id DESC'
+      : 'COALESCE(o.paid_at, o.created_at) DESC, o.id DESC';
+
+  const total = stmt(
+    `SELECT COUNT(*) AS c FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE ${whereSql}`
+  ).get(...params).c;
+
+  const rows = stmt(
+    `SELECT o.id, o.user_id, o.regions, o.qty, o.stars, o.charge_id, o.status,
+            o.token, o.created_at, o.paid_at, o.expires_at,
+            u.username AS username, u.first_name AS first_name
+       FROM orders o LEFT JOIN users u ON u.id = o.user_id
+      WHERE ${whereSql}
+      ORDER BY ${orderSql}
+      LIMIT ? OFFSET ?`
+  ).all(...params, limit, offset);
+
+  return { total: Number(total) || 0, rows };
+}
+
 function logEvent(type, dataObj) {
   try {
     let data = '{}';
@@ -734,6 +825,9 @@ module.exports = {
   setOrderStatus,
   ordersOfUser,
   statsSummary,
+  adminSummary,
+  adminUserExists,
+  ordersForAdmin,
   logEvent,
   addSaleMsg,
   dueSaleMsgs,

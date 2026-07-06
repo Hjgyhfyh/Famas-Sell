@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ru" data-theme="bw">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="format-detection" content="telephone=no">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000" id="metaTheme">
+<title>FAMAS STORE ⁂ — админка</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23000'/%3E%3Ctext x='32' y='45' font-family='Georgia,serif' font-size='34' fill='%23fff' text-anchor='middle'%3E%E2%81%82%3C/text%3E%3C/svg%3E">
+<script>
+/* тема и стекло — ДО первого рендера, чтобы не было вспышки */
+(function () {
+  try {
+    var t = localStorage.getItem('famas_theme');
+    if (t === 'dracula' || t === 'bw') document.documentElement.setAttribute('data-theme', t);
+    if (localStorage.getItem('famas_glass') === '1') document.documentElement.setAttribute('data-glass', '1');
+  } catch (e) { /* приватный режим — молча */ }
+})();
+</script>
+<link rel="stylesheet" href="./admin.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+
+<!-- блобы жидкого стекла (видны только при data-glass="1") -->
+<div class="blobs" aria-hidden="true"><i class="bl b1"></i><i class="bl b2"></i><i class="bl b3"></i></div>
+<!-- лёгкий шум-плёнка -->
+<div class="noise" aria-hidden="true"></div>
+
+<!-- плашка ошибок сети -->
+<div class="errbar mono" id="errbar" role="alert"><span id="errbarText"></span></div>
+
+<!-- ══════════ экран «доступ только для администратора» ══════════ -->
+<section class="gate" id="gate" hidden>
+  <div class="gate-card gl">
+    <div class="gate-ring" aria-hidden="true"><span class="gate-mark">⛔</span></div>
+    <h2 class="gate-title serif">Доступ только<br>для администратора</h2>
+    <p class="gate-sub mono tiny" id="gateSub">панель открывается из бота: /admin → «📊 открыть админку»</p>
+    <p class="gate-foot mono tiny dim caps">⁂ famas store · служебная зона</p>
+  </div>
+</section>
+
+<!-- ══════════ панель ══════════ -->
+<main class="wrap" id="app">
+
+  <header class="masthead">
+    <div class="mast-row">
+      <span class="mono tiny dim caps">№ 001 · панель владельца</span>
+      <span class="mast-actions">
+        <button type="button" class="iconbtn" id="btnRefresh" aria-label="Обновить данные"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+        <button type="button" class="iconbtn" id="btnSettings" aria-label="Настройки"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8.1M17.6 8H20M4 16h2.4M9.9 16H20"/><circle cx="14.85" cy="8" r="2.35"/><circle cx="7.15" cy="16" r="2.35"/></svg></button>
+      </span>
+    </div>
+    <div class="brand">
+      <div class="brand-mark serif" aria-hidden="true">⁂</div>
+      <h1 class="brand-name serif">FAMAS STORE</h1>
+      <p class="brand-sub mono">админка</p>
+    </div>
+    <div class="trust mono tiny">
+      <span class="dot" aria-hidden="true"></span><span id="trustText">проверка доступа…</span>
+    </div>
+  </header>
+
+  <!-- ── 01 · сводка ── -->
+  <div class="section-head">
+    <h2 class="mono caps sec"><b>01 /</b> сводка</h2>
+  </div>
+
+  <section class="summary" aria-label="Сводная статистика">
+    <div class="tiles">
+      <div class="tile gl t1"><span class="tl mono caps">💰 продаж</span><b class="tv mono" id="stOrders" data-v="0">0</b></div>
+      <div class="tile gl t2 rev"><span class="tl mono caps">⭐ выручка</span><b class="tv mono" id="stRevenue" data-v="0">0</b></div>
+      <div class="tile gl t3"><span class="tl mono caps">👥 покупателей</span><b class="tv mono" id="stBuyers" data-v="0">0</b></div>
+      <div class="tile gl t4 today"><span class="tl mono caps">📈 сегодня</span><b class="tv mono" id="stToday" data-v="0">0</b></div>
+    </div>
+    <div class="facts gl">
+      <div class="frow mono"><span class="fk">ЗАКАЗОВ ВСЕГО</span><span class="lead"></span><span class="fv" id="stTotal">—</span></div>
+      <div class="frow mono"><span class="fk">КОНФИГОВ АКТИВНО</span><span class="lead"></span><span class="fv" id="stConfigs">—</span></div>
+      <div class="frow mono"><span class="fk">РЕГИОНОВ</span><span class="lead"></span><span class="fv" id="stRegions">—</span></div>
+      <div class="frow mono"><span class="fk">FREE-РЕГИОНОВ У ЮЗЕРОВ</span><span class="lead"></span><span class="fv" id="stFree">—</span></div>
+    </div>
+  </section>
+
+  <!-- ── 02 · покупки ── -->
+  <div class="section-head">
+    <h2 class="mono caps sec"><b>02 /</b> покупки <span class="sec-n" id="feedTotal"></span></h2>
+  </div>
+
+  <div class="ctrls gl">
+    <div class="ctrls-in">
+      <div class="sortwrap" id="sortWrap" role="radiogroup" aria-label="Сортировка покупок">
+        <button type="button" class="sortchip mono active" role="radio" aria-checked="true" data-sort="new">🆕 Новые</button>
+        <button type="button" class="sortchip mono" role="radio" aria-checked="false" data-sort="price">💎 Дорогие</button>
+      </div>
+      <div class="search">
+        <input type="search" id="searchInput" class="mono" placeholder="поиск: @ник или id…" autocomplete="off" spellcheck="false" aria-label="Поиск по нику или id покупателя" enterkeyhint="search">
+      </div>
+    </div>
+  </div>
+
+  <div class="feed" id="feed"></div>
+
+  <div class="feednote" id="feedNote" hidden>
+    <div class="fn-mark serif" aria-hidden="true">⁂</div>
+    <p class="fn-big serif" id="feedNoteTitle"></p>
+    <p class="fn-sub mono tiny" id="feedNoteText"></p>
+    <button type="button" class="chip" id="btnRetry" hidden>⟳ Повторить</button>
+  </div>
+
+  <div class="morewrap" id="moreWrap" hidden>
+    <button type="button" class="btn-more" id="btnMore">
+      <span class="bm-label">Показать ещё</span>
+      <span class="pb-spin" aria-hidden="true"></span>
+    </button>
+  </div>
+  <p class="feedend mono dim caps" id="feedEnd" hidden></p>
+  <div class="sentinel" id="sentinel" aria-hidden="true"></div>
+
+  <footer class="pagefoot mono tiny dim caps">⁂ famas store · панель владельца</footer>
+
+</main>
+
+<!-- ── bottom-sheet настроек ── -->
+<div class="sheet-back" id="sheetBack" hidden></div>
+<div class="sheet gl" id="sheet" role="dialog" aria-modal="true" aria-label="Настройки" hidden>
+  <div class="sheet-handle" aria-hidden="true"></div>
+  <div class="sheet-title mono caps">⚙︎ настройки</div>
+
+  <div class="set-row">
+    <span class="set-label mono tiny caps">тема</span>
+    <div class="seg" id="segTheme" role="radiogroup" aria-label="Тема оформления">
+      <span class="seg-thumb" aria-hidden="true"></span>
+      <button type="button" class="seg-btn active" role="radio" aria-checked="true" data-th="bw">ЧБ</button>
+      <button type="button" class="seg-btn" role="radio" aria-checked="false" data-th="dracula">DRACULA</button>
+    </div>
+  </div>
+
+  <div class="set-row">
+    <span class="set-label mono tiny caps">жидкое стекло</span>
+    <button type="button" class="switch" id="swGlass" role="switch" aria-checked="false" aria-label="Жидкое стекло"><span class="knob"></span></button>
+  </div>
+
+  <p class="set-prev mono tiny dim caps">превью</p>
+  <div class="ocard prev gl" aria-hidden="true">
+    <div class="o-top">
+      <span class="ava c1"><i class="ava-fb serif">F</i></span>
+      <div class="o-user">
+        <div class="o-name"><span class="o-uname">@famas</span><span class="badge paid">💰 Оплата</span></div>
+        <span class="o-id mono">id 927937870 <span class="cp" aria-hidden="true">⧉</span></span>
+      </div>
+      <div class="o-right"><span class="o-sum mono">+40 ⭐</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast mono" id="toast" role="status" aria-live="polite" hidden></div>
+
+<noscript><div class="noscript mono">включи JavaScript — без него админка не работает</div></noscript>
+
+<script src="./admin.js"></script>
+</body>
+</html>

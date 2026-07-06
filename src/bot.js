@@ -27,6 +27,7 @@ const THIN = '─────────────────';
 const BRAND = '⬛️ FAMAS STORE ⁂';
 const SUPPORT_URL = `https://t.me/${config.SUPPORT_USERNAME}`;
 const APP_URL = `${config.PUBLIC_BASE}/app/`;
+const ADMIN_URL = `${config.PUBLIC_BASE}/admin/`;
 const BOT_URL = `https://t.me/${config.BOT_USERNAME}`;
 
 /* ── мелкие утилиты ───────────────────────────────────────────── */
@@ -483,7 +484,7 @@ function paysupportView() {
   return { text, kb };
 }
 
-function adminPanelView(extraLine) {
+function adminPanelView(extraLine, isPrivate) {
   let s = { users: 0, ordersPaid: 0, revenueStars: 0, activeConfigs: 0, regionsCount: 0, salesToday: 0 };
   try {
     s = db.statsSummary();
@@ -522,6 +523,8 @@ function adminPanelView(extraLine) {
     .row()
     .text('🎁 Выдать ключ', 'adm:gift')
     .text('🎁 Бесплатные', 'adm:free');
+  // SPEC-ADMIN §5: веб-админка «кто что купил» — web_app только в личке (в группе Telegram отклонит).
+  if (isPrivate) kb.row().webApp('📊 Открыть админку', ADMIN_URL);
   return { text: lines.join('\n'), kb };
 }
 
@@ -1004,7 +1007,7 @@ function createBot() {
 
   bot.command('admin', async (ctx) => {
     if (!ctx.from || !isAdmin(ctx.from.id)) return; // тихий игнор
-    const v = adminPanelView();
+    const v = adminPanelView(undefined, isPrivateCtx(ctx));
     await ctx.reply(v.text, msgOpts(v.kb));
   });
 
@@ -1507,8 +1510,9 @@ function createBot() {
   bot.callbackQuery('adm:refresh', guardAdmin(async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
     // работаем в фоне, чтобы long-poll не стоял 30 секунд на fetch
+    const priv = isPrivateCtx(ctx);
     (async () => {
-      const waiting = adminPanelView('⟳ Обновляю базу…');
+      const waiting = adminPanelView('⟳ Обновляю базу…', priv);
       await ctx.editMessageText(waiting.text, msgOpts(waiting.kb)).catch(() => {});
       let line;
       try {
@@ -1519,7 +1523,7 @@ function createBot() {
       } catch (e) {
         line = `⟳ Ошибка: ${esc(cut(errText(e), 120))}`;
       }
-      const v = adminPanelView(line);
+      const v = adminPanelView(line, priv);
       await ctx.editMessageText(v.text, msgOpts(v.kb)).catch(() => {});
     })().catch((e) => console.error('[bot] adm:refresh:', errText(e)));
   }));

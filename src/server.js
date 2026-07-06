@@ -25,6 +25,7 @@ const path = require('path');
 const express = require('express');
 const QRCode = require('qrcode');
 
+const config = require('./config');
 const db = require('./db');
 const util = require('./util');
 const inventory = require('./inventory');
@@ -154,6 +155,91 @@ function authFromInitData(raw) {
   }
   if (!auth || auth.ok !== true || !auth.user || !auth.user.id) return null;
   return auth;
+}
+
+/* ───────────────────────── админка (SPEC-ADMIN §2) ───────────────────────── */
+
+/** initData админ-запроса: из query ?initData= или заголовка X-Init-Data. */
+function adminInitData(req) {
+  let raw = typeof req.query.initData === 'string' ? req.query.initData : '';
+  if (!raw) {
+    const h = req.get('X-Init-Data');
+    if (typeof h === 'string') raw = h;
+  }
+  return raw;
+}
+
+/**
+ * requireAdmin(initData) -> {ok:true, user} | {ok:false}
+ * validateInitData (HMAC + свежесть) И user.id ∈ config.ADMIN_IDS. Иначе {ok:false} → 403.
+ */
+function requireAdmin(initData) {
+  const auth = authFromInitData(initData);
+  if (!auth) return { ok: false };
+  const id = Number(auth.user.id);
+  if (!Array.isArray(config.ADMIN_IDS) || !config.ADMIN_IDS.includes(id)) return { ok: false };
+  return { ok: true, user: auth.user };
+}
+
+/** Русское имя региона по iso: из свежей сводки, иначе фолбэк nameRuOf (для неактивных). */
+function nameRuFor(iso, summaryByIso) {
+  const s = summaryByIso && summaryByIso.get(iso);
+  if (s && s.nameRu) return s.nameRu;
+  return util.nameRuOf(iso, null) || iso;
+}
+
+/**
+ * Маппинг сырой строки ordersForAdmin → API-форма (SPEC-ADMIN §2).
+ * regions из qty JSON {iso:count}; старый заказ (qty NULL) → по regions с qty:null
+ * (servers = число выданных конфигов). kind: gift→'gift'; FREE/0⭐→'free'; иначе 'paid'.
+ */
+function mapAdminOrder(row, now, summaryByIso) {
+  const isos = orderRegions(row);
+  const qty = orderQty(row);
+
+  let regions;
+  let servers;
+  if (qty) {
+    regions = isos.map((iso) => ({
+      iso: iso,
+      nameRu: nameRuFor(iso, summaryByIso),
+      flag: util.isoToFlag(iso),
+      qty: Number(qty[iso]) || 0,
+    }));
+    servers = sumQty(qty);
+  } else {
+    // старый заказ: количество серверов = число реально выданных конфигов, ×N не показываем
+    const cfgs = subConfigsSafe(isos, 'admin/orders');
+    servers = cfgs.length;
+    regions = isos.map((iso) => ({
+      iso: iso,
+      nameRu: nameRuFor(iso, summaryByIso),
+      flag: util.isoToFlag(iso),
+      qty: null,
+    }));
+  }
+
+  let kind;
+  if (row.status === 'gift') kind = 'gift';
+  else if (row.charge_id === 'FREE' || Number(row.stars) === 0) kind = 'free';
+  else kind = 'paid';
+
+  return {
+    id: row.id,
+    userId: row.user_id,
+    username: row.username || null,
+    firstName: row.first_name || null,
+    kind: kind,
+    stars: Number(row.stars) || 0,
+    servers: servers,
+    regions: regions,
+    createdAt: row.created_at || null,
+    paidAt: row.paid_at || null,
+    expiresAt: row.expires_at || null,
+    active: isOrderActive(row, now),
+    token: row.token,
+    page: subscription.pageUrl(row.token),
+  };
 }
 
 /* ────────────────────────────── сервер ────────────────────────────── */
@@ -541,6 +627,202 @@ function createServer(botApi) {
       lastRefresh: inventory.lastRefresh || null
     });
   });
+
+  /* ─────────────────── АДМИНКА «кто что купил» (SPEC-ADMIN §2) ─────────────────── */
+  /* Всё под /famas/admin/*, регистрируется ДО дефолтного 404 и не пересекается с
+   * существующими маршрутами (/famas/api, /famas/app, /famas/flags и т.д.). Все данные —
+   * только через admin-API со строгой проверкой requireAdmin (initData + ADMIN_IDS). */
+
+  // In-memory кэш аватарок: userId -> {buf, type, ts}. TTL ~1ч, ≤200 записей (простая эвикция).
+  const AVATAR_TTL_MS = 60 * 60 * 1000;
+  const AVATAR_MAX = 200;
+  const avatarCache = new Map();
+
+  // /admin/api не кешируем (SPEC-ADMIN §2).
+  app.use('/famas/admin/api', function (req, res, next) {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
+
+  function denyAdmin(res) {
+    return res.status(403).json({ ok: false, error: 'Доступ только для администратора' });
+  }
+
+  /* GET /famas/admin/api/summary — сводная статистика для панели. */
+  app.get('/famas/admin/api/summary', function (req, res) {
+    const gate = requireAdmin(adminInitData(req));
+    if (!gate.ok) return denyAdmin(res);
+
+    let base = { ordersPaid: 0, revenueStars: 0, salesToday: 0, activeConfigs: 0, regionsCount: 0 };
+    try {
+      base = db.statsSummary();
+    } catch (e) {
+      logErr('admin/summary/statsSummary', e);
+    }
+    let extra = { uniqueBuyers: 0, ordersTotal: 0, freeActive: 0 };
+    try {
+      extra = db.adminSummary();
+    } catch (e) {
+      logErr('admin/summary/adminSummary', e);
+    }
+
+    res.json({
+      ok: true,
+      stats: {
+        ordersPaid: base.ordersPaid,
+        revenueStars: base.revenueStars,
+        salesToday: base.salesToday,
+        uniqueBuyers: extra.uniqueBuyers,
+        activeConfigs: base.activeConfigs,
+        regionsCount: base.regionsCount,
+        ordersTotal: extra.ordersTotal,
+        freeActive: extra.freeActive,
+      },
+    });
+  });
+
+  /* GET /famas/admin/api/orders — лента покупок (paid|gift), сортировка/поиск/пагинация. */
+  app.get('/famas/admin/api/orders', function (req, res) {
+    const gate = requireAdmin(adminInitData(req));
+    if (!gate.ok) return denyAdmin(res);
+
+    const sort = req.query.sort === 'price' ? 'price' : 'new';
+    let result;
+    try {
+      result = db.ordersForAdmin({
+        sort: sort,
+        limit: req.query.limit, // db клампит (дефолт 50, макс 200)
+        offset: req.query.offset, // db клампит (дефолт 0)
+        q: typeof req.query.q === 'string' ? req.query.q : '',
+      });
+    } catch (e) {
+      logErr('admin/orders', e);
+      return res.status(500).json({ ok: false, error: 'Не удалось получить заказы' });
+    }
+
+    const now = nowSec();
+    const summaryByIso = new Map();
+    try {
+      for (const r of db.regionsSummary() || []) summaryByIso.set(r.iso, r);
+    } catch (e) {
+      logErr('admin/orders/regionsSummary', e);
+    }
+
+    const orders = (result.rows || []).map((row) => mapAdminOrder(row, now, summaryByIso));
+    res.json({ ok: true, total: result.total, orders: orders });
+  });
+
+  /* GET /famas/admin/avatar/:userId — аватар покупателя, ПРОКСИ через бота (токен не светим). */
+  app.get('/famas/admin/avatar/:userId', wrap(async function (req, res) {
+    const gate = requireAdmin(adminInitData(req));
+    if (!gate.ok) return denyAdmin(res);
+
+    const avatar404 = () => res.status(404).type('text/plain; charset=utf-8').send('no avatar');
+
+    const userId = Number(req.params.userId);
+    if (!Number.isInteger(userId) || userId <= 0) return avatar404();
+
+    // userId должен встречаться среди пользователей/заказов — иначе 404 (нельзя пробить чужой id).
+    let known = false;
+    try {
+      known = db.adminUserExists(userId);
+    } catch (e) {
+      logErr('admin/avatar/adminUserExists', e);
+    }
+    if (!known) return avatar404();
+
+    // кэш (TTL ~1ч)
+    const cached = avatarCache.get(userId);
+    if (cached && Date.now() - cached.ts < AVATAR_TTL_MS) {
+      res.set('Content-Type', cached.type || 'image/jpeg');
+      res.set('Cache-Control', 'private, max-age=3600');
+      return res.send(cached.buf);
+    }
+    if (cached) avatarCache.delete(userId); // протух
+
+    if (!botApi || typeof botApi.getUserProfilePhotos !== 'function') return avatar404();
+
+    // 1) фото профиля
+    let photos;
+    try {
+      photos = await botApi.getUserProfilePhotos(userId, { limit: 1 });
+    } catch (e) {
+      return avatar404();
+    }
+    if (!photos || !Number(photos.total_count) || !Array.isArray(photos.photos) || !photos.photos.length) {
+      return avatar404();
+    }
+    const sizes = photos.photos[0];
+    if (!Array.isArray(sizes) || !sizes.length) return avatar404();
+
+    // выбрать самый крупный размер ≤320px; если таких нет — наименьший доступный
+    let chosen = null;
+    for (const s of sizes) {
+      if (!s || !s.file_id) continue;
+      const w = Number(s.width) || 0;
+      if (w <= 320) {
+        if (!chosen || w > (Number(chosen.width) || 0)) chosen = s;
+      }
+    }
+    if (!chosen) {
+      for (const s of sizes) {
+        if (!s || !s.file_id) continue;
+        if (!chosen || (Number(s.width) || 0) < (Number(chosen.width) || 0)) chosen = s;
+      }
+    }
+    if (!chosen || !chosen.file_id) return avatar404();
+
+    // 2) file_path
+    let file;
+    try {
+      file = await botApi.getFile(chosen.file_id);
+    } catch (e) {
+      return avatar404();
+    }
+    const filePath = file && file.file_path;
+    if (!filePath || typeof filePath !== 'string') return avatar404();
+
+    // 3) скачать байты (BOT_TOKEN — только на сервере, клиенту не отдаём)
+    const token = config.BOT_TOKEN;
+    if (!token) return avatar404();
+    const fileUrl = 'https://api.telegram.org/file/bot' + token + '/' + filePath;
+
+    let resp;
+    try {
+      resp = await fetch(fileUrl);
+    } catch (e) {
+      logErr('admin/avatar/fetch', e);
+      return avatar404();
+    }
+    if (!resp || !resp.ok) return avatar404();
+
+    let buf;
+    try {
+      buf = Buffer.from(await resp.arrayBuffer());
+    } catch (e) {
+      logErr('admin/avatar/arrayBuffer', e);
+      return avatar404();
+    }
+    if (!buf || buf.length === 0) return avatar404();
+
+    // положить в кэш с простой эвикцией самого старого при переполнении
+    if (avatarCache.size >= AVATAR_MAX) {
+      const oldestKey = avatarCache.keys().next().value;
+      if (oldestKey !== undefined) avatarCache.delete(oldestKey);
+    }
+    avatarCache.set(userId, { buf: buf, type: 'image/jpeg', ts: Date.now() });
+
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Cache-Control', 'private, max-age=3600');
+    res.send(buf);
+  }));
+
+  /* GET /famas/admin/* — статика админки (public/admin). Публична (секретов нет),
+   * данные только через admin-API выше. Регистрируется после точечных admin-роутов. */
+  app.use('/famas/admin', express.static(path.join(PUBLIC_DIR, 'admin'), {
+    maxAge: '1m',
+    index: 'index.html',
+  }));
 
   /* Дефолтный 404. */
   app.use(function (req, res) {
