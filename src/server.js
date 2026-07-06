@@ -921,12 +921,10 @@ function createServer(botApi) {
     // страница-подсказка ведёт на страницу ключа (заказа ИЛИ объединённого).
     const pageToken = r.kind === 'merged' ? r.user.merged_token : r.order.token;
 
-    // SPEC-HARDEN ч.2 §1: UA-gate. Явный браузер/утилита (Mozilla/Chrome/Safari/curl/…) БЕЗ
-    // ?app=1 и без VPN-маркера → страница-подсказку, НЕ сырые vless. Реальные VPN-клиенты (по
-    // VPN_UA_ALLOW), незнакомые и пустые UA — обычную base64-подписку. Deep-links Happ/v2rayTun
-    // открывают приложение, которое само дёрнет /s со своим UA → пройдут gate. Для объединённого
-    // ключа gate идентичен (SPEC-MERGE §5).
-    if (!forcesAppDelivery(req) && isBrowserLikeUA(req.get('user-agent'))) {
+    // UA-gate ОТКЛЮЧЁН по требованию владельца: ссылки подписки не скрываем, отдаём всем (браузер,
+    // приложение, curl) — прямой доступ по ссылке ключа. Можно вернуть включив SUB_UA_GATE=1.
+    void pageToken;
+    if (config.SUB_UA_GATE && !forcesAppDelivery(req) && isBrowserLikeUA(req.get('user-agent'))) {
       res.set('Content-Type', 'text/html; charset=utf-8');
       return res.status(200).send(subGateStubHtml(subscription.pageUrl(pageToken)));
     }

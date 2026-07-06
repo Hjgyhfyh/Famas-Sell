@@ -230,6 +230,8 @@ const config = {
   VPN_UA_ALLOW: envList('VPN_UA_ALLOW', DEFAULT_VPN_UA_ALLOW),
   // Явные браузеры/утилиты (подстроки UA, lowercase) — им отдаём страницу-подсказку. env-переопределяемый.
   BROWSER_UA_BLOCK: envList('BROWSER_UA_BLOCK', DEFAULT_BROWSER_UA_BLOCK),
+  // UA-gate подписки: 0 (по умолчанию) = ссылки НЕ скрываем, отдаём всем; 1 = браузеру заглушка.
+  SUB_UA_GATE: envBool('SUB_UA_GATE', 0),
 
   // ── SPEC-STABILITY2 §1: отказоустойчивость ключа (ключ НИКОГДА не должен пропадать) ──
   // Сколько ДОПОЛНИТЕЛЬНЫХ живых серверов региона класть в подписку сверх купленного qty —
