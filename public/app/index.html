@@ -277,6 +277,16 @@
   </div>
 </div>
 
+<!-- ── QR-код объединённого ключа (SPEC-MERGE) ── -->
+<div class="ovl qrovl" id="qrOvl" role="dialog" aria-modal="true" aria-label="QR-код ключа" hidden>
+  <div class="ovl-card gl">
+    <h2 class="serif ovl-title">QR-КОД</h2>
+    <p class="mono tiny ovl-sub">сканируй камерой из приложения —<br>подписка добавится сама</p>
+    <div class="qrbox"><img id="qrImg" alt="QR-код ссылки-подписки" width="208" height="208" decoding="async"></div>
+    <button type="button" class="btn ghost big wfull" id="btnQrClose">ЗАКРЫТЬ</button>
+  </div>
+</div>
+
 <!-- ── bottom-sheet настроек ── -->
 <div class="sheet-back" id="sheetBack" hidden></div>
 <div class="sheet gl" id="sheet" role="dialog" aria-modal="true" aria-label="Настройки" hidden>

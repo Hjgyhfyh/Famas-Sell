@@ -402,6 +402,65 @@ body.theming, body.theming * {
 .k-meta { font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: .08em; }
 .k-actions { display: flex; gap: 8px; margin-top: 14px; }
 
+/* ── SPEC-MERGE: объединение всех ключей в один ── */
+/* заметная кнопка-предложение — карточка-«купон» с dashed-акцентом во всю ширину */
+.mergebtn {
+  position: relative; width: 100%; min-height: 64px;
+  display: flex; align-items: center; gap: 12px; text-align: left;
+  background-color: var(--card); border: 1px dashed var(--accent); border-radius: var(--r-lg);
+  color: var(--text); padding: 15px 16px; margin-bottom: 12px;
+  transition: transform .15s ease, background-color .18s ease;
+  animation: fadeUp .34s var(--ease) backwards;
+}
+:root[data-glass="1"] .mergebtn.gl { border-color: var(--accent); border-style: dashed; }
+.mergebtn:active { transform: scale(.98); }
+.mg-ico { font-size: 22px; line-height: 1; flex: none; animation: refFloat 3.6s ease-in-out infinite; }
+.mg-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.mg-txt b { font-size: 11px; font-weight: 700; letter-spacing: .1em; }
+.mg-txt i { font-style: normal; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.mg-arr { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.mg-spin {
+  display: none; position: absolute; right: 16px; top: 50%;
+  width: 16px; height: 16px; margin-top: -8px; border-radius: 50%;
+  border: 2px solid var(--accent); border-top-color: transparent;
+  animation: spin .7s linear infinite;
+}
+.mergebtn.busy { pointer-events: none; }
+.mergebtn.busy .mg-arr { visibility: hidden; }
+.mergebtn.busy .mg-spin { display: block; }
+.mergebtn:disabled { opacity: .6; }
+
+/* единый ключ — премиум-квитанция с dashed-акцентом и пружинным входом */
+.keycard.merged { border-style: dashed; border-color: var(--accent); }
+:root[data-glass="1"] .keycard.merged.gl { border-color: var(--accent); border-style: dashed; }
+.keycard.pop { animation: mergeIn .5s var(--spring) backwards; }
+@keyframes mergeIn { from { opacity: 0; transform: scale(.92) translateY(10px); } }
+/* строки регионов: флаг · имя ×qty ……… «до DD.MM» (у каждого — СВОЙ срок) */
+.m-rows { display: flex; flex-direction: column; gap: 9px; margin-bottom: 12px; }
+.m-row { display: flex; align-items: center; gap: 9px; font-family: var(--mono); font-size: 11px; min-width: 0; }
+.m-row .lead { transform: none; align-self: center; min-width: 12px; }
+.m-name { color: var(--text); letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-qty { color: var(--muted); font-weight: 700; }
+.m-exp { color: var(--muted); font-size: 10px; letter-spacing: .06em; white-space: nowrap; flex: none; font-variant-numeric: tabular-nums; }
+.m-empty { color: var(--dim); letter-spacing: .08em; line-height: 1.8; padding: 2px 0 4px; }
+.m-actions2 { margin-top: 8px; }
+
+/* анимация схлопывания списка в один ключ (и растворения единого ключа) */
+.keys .collapsing {
+  transition: transform .4s var(--ease), opacity .3s ease;
+  opacity: 0; pointer-events: none;
+}
+
+/* QR-оверлей: код в белом боксе (тёмные модули читаются в обеих темах) */
+.ovl.qrovl { z-index: 470; }
+.qrbox {
+  width: 232px; height: 232px; margin: 4px auto 18px; padding: 12px;
+  background: #fff; border-radius: var(--r-md);
+  box-shadow: 0 12px 30px -18px rgba(0, 0, 0, .8);
+  display: flex; align-items: center; justify-content: center;
+}
+.qrbox img { width: 100%; height: 100%; }
+
 /* кнопки */
 .btn {
   border-radius: var(--r-sm); border: 1px solid transparent;
@@ -679,6 +738,9 @@ body.theming, body.theming * {
   .region.on:hover { border-color: var(--accent); }
   .region.prev:hover { transform: none; box-shadow: none; border-color: var(--accent); }
   .keycard:hover { border-color: var(--muted); }
+  .keycard.merged:hover { border-color: var(--accent); }
+  .mergebtn:hover { background-color: var(--card2); transform: translateY(-1px); }
+  .mergebtn:hover:active { transform: scale(.98); }
   .bonusbadge:hover { color: var(--text); transform: translateY(-1px); }
   .bonusbadge:hover:active { transform: scale(.97); }
   .ref-linkbox:hover { background-color: var(--card2); }
@@ -704,7 +766,7 @@ body.theming, body.theming * {
     animation-duration: .01s !important;
     animation-delay: 0s !important;
   }
-  /* спиннер оплаты — индикатор состояния, оставляем живым */
-  .pb-spin { animation-duration: .7s !important; }
-  .bl, .dot, .skel::after, .ref-glyph { animation: none !important; }
+  /* спиннеры — индикаторы состояния, оставляем живыми */
+  .pb-spin, .mg-spin { animation-duration: .7s !important; }
+  .bl, .dot, .skel::after, .ref-glyph, .mg-ico { animation: none !important; }
 }

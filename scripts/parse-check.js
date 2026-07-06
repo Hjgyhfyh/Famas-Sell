@@ -129,7 +129,9 @@ check(
   util.configHash(dupHost.split('\n')[0], true) !== util.configHash(dupHost.split('\n')[1], true)
 );
 
-// 5) Whitelist (файл 26): mergeInto — при коллизии host:port категория white побеждает black.
+// 5) Whitelist (файл 26): mergeInto — при коллизии host:port категория black побеждает white
+//    (f0d42f3: основной каталог 1-25 большой, white — только эксклюзивные whitelist-серверы файла 26).
+//    Представителя uri/меток при этом всё равно выбирает pickBest (reality>tls>none) — отдельно от категории.
 const wmap = new Map();
 util.mergeInto(wmap, 'vless://cccccccc-3333-3333-3333-333333333333@8.8.4.4:443?security=none#black', {
   category: 'black',
@@ -139,7 +141,7 @@ util.mergeInto(wmap, 'vless://dddddddd-4444-4444-4444-444444444444@8.8.4.4:443?s
 });
 const wone = [...wmap.values()][0];
 check('mergeInto: коллизия схлопнута в 1', wmap.size === 1, `size=${wmap.size}`);
-check('mergeInto: white побеждает black', wone && wone.category === 'white', wone && wone.category);
+check('mergeInto: black побеждает white', wone && wone.category === 'black', wone && wone.category);
 check('mergeInto: pickBest сохранил reality-представителя', wone && wone._sec === 3, wone && String(wone._sec));
 
 // 6) Одиночный источник с category:'white' → все конфиги помечены white (для list_type).

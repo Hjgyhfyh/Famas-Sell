@@ -3,6 +3,7 @@
    API: /famas/api (§9 SPEC) · дизайн v2 «FAMAS ROUNDED» (SPEC-V2)
    SPEC-QTY: количество серверов на регион + 3 сортировки витрины
    SPEC-REFERRAL: вкладка «Друзья» (реф-ссылка) + бонус-звёзды в оплате
+   SPEC-MERGE: «МОИ КЛЮЧИ» — объединение всех ключей в ОДИН (merge/unmerge + QR)
    ═══════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
@@ -50,7 +51,13 @@
     pollTimer: null,
     prevSum: 0,
     sheetOpen: false,
-    ovlOpen: false
+    ovlOpen: false,
+    /* SPEC-MERGE: объединение всех ключей в один */
+    merged: false,      // включён ли режим «один ключ» (поле merged из /api/me)
+    canMerge: false,    // есть ≥2 активных заказа — можно объединить (поле canMerge)
+    mergedKey: null,    // единый ключ {token,page,sub,servers,expiresMax,regions[{iso,nameRu,flag,qty,expiresAt}]}
+    mergeBusy: false,   // идёт POST /api/merge
+    qrOpen: false       // открыт QR-оверлей объединённого ключа
   };
 
   /* ── dom ─────────────────────────────────────────────────────── */
@@ -75,6 +82,8 @@
   var elErrbar = $('errbar');
   var elErrText = $('errbarText');
   var elOvl = $('ovl');
+  var elQrOvl = $('qrOvl');   /* SPEC-MERGE: QR объединённого ключа */
+  var elQrImg = $('qrImg');
   var elSheet = $('sheet');
   var elSheetBack = $('sheetBack');
   var elSeg = $('segTheme');
@@ -102,6 +111,13 @@
     var d = new Date(toUnixMs(u));
     var p = function (n) { return String(n).padStart(2, '0'); };
     return p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  /* SPEC-MERGE: короткий срок региона в объединённом ключе — «DD.MM» */
+  function fmtDayMonth(u) {
+    if (!u) return '—';
+    var d = new Date(toUnixMs(u));
+    var p = function (n) { return String(n).padStart(2, '0'); };
+    return p(d.getDate()) + '.' + p(d.getMonth() + 1);
   }
   function plural(n, one, few, many) {
     n = Math.abs(Number(n) || 0) % 100;
@@ -306,12 +322,13 @@
 
   /* ── кнопка «назад» Telegram + Escape: закрывают верхний слой ── */
   function updateBackBtn() {
-    var need = S.sheetOpen || S.ovlOpen;
+    var need = S.sheetOpen || S.ovlOpen || S.qrOpen;
     try {
       if (tg && tg.BackButton) { if (need) tg.BackButton.show(); else tg.BackButton.hide(); }
     } catch (e) { /* noop */ }
   }
   function closeTopLayer() {
+    if (S.qrOpen) { closeQr(); return true; } /* SPEC-MERGE: QR — самый верхний слой */
     if (S.sheetOpen) { closeSheet(); return true; }
     if (S.ovlOpen) { hideSuccess(); return true; }
     return false;
@@ -968,6 +985,10 @@
         var bonus = (typeof d.bonus !== 'undefined') ? d.bonus : (ref ? ref.bonus : undefined);
         if (typeof bonus !== 'undefined') setBonusBalance(bonus);
         renderFriends();
+        /* SPEC-MERGE: состояние объединения + единый ключ (merged/canMerge/key) */
+        S.canMerge = d.canMerge === true;
+        S.merged = d.merged === true;
+        S.mergedKey = (S.merged && d.key && typeof d.key === 'object') ? d.key : null;
         return d.orders || [];
       });
   }
@@ -1019,6 +1040,14 @@
   function pollSuccessPage(attempt) {
     if (!initData) { readySuccessBtn(); return; }
     fetchMe().then(function (orders) {
+      /* SPEC-MERGE: объединение включено — новый заказ уже влит в единый ключ,
+         страница успеха ведёт на объединённую страницу */
+      if (S.merged && S.mergedKey && S.mergedKey.page) {
+        S.successPage = S.mergedKey.page;
+        S.orders = orders;
+        readySuccessBtn();
+        return;
+      }
       var act = null;
       for (var i = 0; i < orders.length; i++) {
         if (orders[i].active) { act = orders[i]; break; } /* новые сверху → первый активный */
@@ -1051,13 +1080,165 @@
       '</div>';
   }
 
+  /* ── SPEC-MERGE: объединённый ключ ───────────────────────────── */
+  /* заметная кнопка-предложение (canMerge && !merged): «🧩 Объединить всё в один ключ» */
+  function mergeOfferHtml() {
+    return '<button type="button" class="mergebtn gl" data-act="merge" aria-label="Объединить все ключи в один">' +
+        '<span class="mg-ico" aria-hidden="true">🧩</span>' +
+        '<span class="mg-txt mono"><b>ОБЪЕДИНИТЬ ВСЁ В ОДИН КЛЮЧ</b>' +
+          '<i>все регионы и серверы — одной живой ссылкой</i></span>' +
+        '<svg class="mg-arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>' +
+        '<span class="mg-spin" aria-hidden="true"></span>' +
+      '</button>';
+  }
+
+  /* премиум-«квитанция» единого ключа: все регионы ×qty, у каждого — СВОЙ срок
+     «до DD.MM» (истёкшее выпадает само), серверов: N, Открыть/Копировать/QR/Разъединить */
+  function mergedCardHtml(k) {
+    k = k || {};
+    var regions = k.regions || [];
+    var servers = Math.max(0, Math.floor(Number(k.servers) || 0));
+    var act = regions.length > 0;
+    var rows = '';
+    for (var i = 0; i < regions.length; i++) {
+      var rg = regions[i] || {};
+      var q = Math.max(0, Math.floor(Number(rg.qty) || 0));
+      rows +=
+        '<div class="m-row">' +
+          flagChipHtml(rg.iso, rg.flag, true) +
+          '<span class="m-name">' + esc(rg.nameRu || rg.name || rg.iso || '—') +
+            (q >= 1 ? ' <b class="m-qty">×' + q + '</b>' : '') + '</span>' +
+          '<span class="lead"></span>' +
+          '<span class="m-exp">до ' + esc(fmtDayMonth(rg.expiresAt)) + '</span>' +
+        '</div>';
+    }
+    if (!rows) rows = '<p class="m-empty mono tiny">активных заказов сейчас нет — новые покупки добавятся в этот ключ сами</p>';
+    var meta = 'серверов: ' + servers + ' · одна ссылка на всё' +
+      (act && k.expiresMax ? ' · до ' + fmtDate(k.expiresMax) : '');
+    return '<article class="keycard merged pop gl" data-page="' + esc(k.page || '') + '" data-sub="' + esc(k.sub || '') + '" data-token="' + esc(k.token || '') + '">' +
+        '<div class="k-top"><span class="k-id">🧩 ОБЪЕДИНЁННЫЙ КЛЮЧ</span>' +
+          (act ? '<span class="k-status">● АКТИВЕН</span>' : '<span class="k-status off">○ ИСТЁК</span>') +
+        '</div>' +
+        '<div class="k-rule"></div>' +
+        '<div class="m-rows">' + rows + '</div>' +
+        '<div class="k-rule"></div>' +
+        '<div class="k-meta">' + esc(meta) + '</div>' +
+        '<div class="k-actions">' +
+          '<button type="button" class="btn accent" data-act="open">ОТКРЫТЬ</button>' +
+          '<button type="button" class="btn secondary" data-act="copy">КОПИРОВАТЬ ССЫЛКУ</button>' +
+        '</div>' +
+        '<div class="k-actions m-actions2">' +
+          '<button type="button" class="btn secondary" data-act="qr"><svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.6"/><rect x="14" y="3.5" width="6.5" height="6.5" rx="1.6"/><rect x="3.5" y="14" width="6.5" height="6.5" rx="1.6"/><path d="M14 14h2.6v2.6H14zM20.5 14v2.7M14 20.5h2.7M18.3 18.3l2.2 2.2"/></svg>QR-КОД</button>' +
+          '<button type="button" class="btn ghost" data-act="unmerge">РАЗЪЕДИНИТЬ</button>' +
+        '</div>' +
+      '</article>';
+  }
+
+  /* анимация «списка → один ключ»: карточки слетаются к верху и тают, затем
+     рендерится единый ключ (пружинный вход). reduced-motion — мгновенно. */
+  function collapseKeysThen(done) {
+    var cards = elKeys.querySelectorAll('.keycard, .mergebtn');
+    if (!cards.length || reducedMotion()) { done(); return; }
+    var top0 = cards[0].getBoundingClientRect().top;
+    for (var i = 0; i < cards.length; i++) {
+      var r = cards[i].getBoundingClientRect();
+      cards[i].style.transform = 'translateY(' + (top0 - r.top) + 'px) scale(' + Math.max(0.86, 1 - i * 0.04) + ')';
+      cards[i].classList.add('collapsing');
+    }
+    setTimeout(done, 420);
+  }
+  /* обратная: единый ключ тает, дальше — список */
+  function dissolveMergedThen(done) {
+    var card = elKeys.querySelector('.keycard.merged');
+    if (!card || reducedMotion()) { done(); return; }
+    card.style.transform = 'scale(.94)';
+    card.classList.add('collapsing');
+    setTimeout(done, 300);
+  }
+
+  /* POST /famas/api/merge {initData, on} — включить/выключить объединение */
+  function doMerge(on, btn) {
+    if (S.mergeBusy) return;
+    if (!initData) { showErr('открой мини-апп внутри Telegram'); return; }
+    S.mergeBusy = true;
+    if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+    haptic('medium');
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var t = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) { /* noop */ } }, 15000) : null;
+    fetch(API + '/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: initData, on: !!on }),
+      signal: ctl ? ctl.signal : undefined
+    })
+      .then(function (r) {
+        if (t) clearTimeout(t);
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          if (!r.ok || !d.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+          return d;
+        });
+      })
+      .then(function (d) {
+        S.mergeBusy = false;
+        S.merged = (typeof d.merged === 'boolean') ? d.merged : !!on;
+        if (typeof d.canMerge !== 'undefined') S.canMerge = d.canMerge === true;
+        S.mergedKey = (d.key && typeof d.key === 'object') ? d.key : (S.merged ? S.mergedKey : null);
+        hapticNotify('success');
+        if (S.merged) {
+          toast('ключи объединены');
+          if (!S.mergedKey) { loadKeys(); return; } /* ключ не пришёл в ответе — взять из /api/me */
+          collapseKeysThen(renderKeys);
+        } else {
+          toast('объединение выключено');
+          dissolveMergedThen(loadKeys); /* список заново с сервера (кэш мог устареть) */
+        }
+      })
+      .catch(function (e) {
+        if (t) clearTimeout(t);
+        S.mergeBusy = false;
+        if (btn) { btn.disabled = false; btn.classList.remove('busy'); }
+        var msg = '';
+        if (e && e.message && e.name !== 'AbortError' && e.name !== 'TypeError' &&
+            !/^HTTP \d+$/.test(e.message)) msg = e.message;
+        showErr(msg || (on ? 'не удалось объединить ключи — попробуй ещё раз'
+                           : 'не удалось разъединить — попробуй ещё раз'));
+      });
+  }
+
+  /* QR объединённого ключа: оверлей с /famas/qr/<token>.svg в белом боксе.
+     Фолбэк (кэш старого index.html без оверлея) — открыть страницу ключа. */
+  function openQr(token, page) {
+    if (!token) { showErr('ссылка недоступна'); return; }
+    if (!elQrOvl || !elQrImg) { openExternal(page); return; }
+    S.qrOpen = true;
+    elQrImg.src = '/famas/qr/' + encodeURIComponent(token) + '.svg';
+    elQrOvl.hidden = false;
+    requestAnimationFrame(function () { elQrOvl.classList.add('in'); });
+    haptic('light');
+    updateBackBtn();
+  }
+  function closeQr() {
+    if (!elQrOvl) { S.qrOpen = false; return; }
+    S.qrOpen = false;
+    elQrOvl.classList.remove('in');
+    setTimeout(function () { elQrOvl.hidden = true; }, 260);
+    updateBackBtn();
+  }
+
   function renderKeys() {
+    /* SPEC-MERGE: режим объединения — показываем ОДИН единый ключ, индивидуальные скрыты */
+    if (S.merged && S.mergedKey) {
+      elKeys.innerHTML = mergedCardHtml(S.mergedKey);
+      return;
+    }
     var orders = S.orders || [];
     if (!orders.length) {
       elKeys.innerHTML = emptyKeysHtml('выбери регионы во вкладке «МАГАЗИН» — ключ появится здесь', true);
       return;
     }
     var html = '';
+    /* SPEC-MERGE: ≥2 активных заказа и объединение выключено — заметная кнопка */
+    if (S.canMerge) html += mergeOfferHtml();
     for (var i = 0; i < orders.length; i++) {
       var o = orders[i];
       var chips = '';
@@ -1220,12 +1401,13 @@
     /* оплата */
     elPayBtn.addEventListener('click', pay);
 
-    /* мои ключи: делегирование */
+    /* мои ключи: делегирование (вкл. SPEC-MERGE: merge/unmerge/qr) */
     elKeys.addEventListener('click', function (ev) {
       var act = ev.target.closest('[data-act]');
       if (!act) return;
       var kind = act.getAttribute('data-act');
       if (kind === 'goshop') { switchTab('shop'); return; }
+      if (kind === 'merge') { doMerge(true, act); return; }
       var card = act.closest('.keycard');
       if (!card) return;
       if (kind === 'open') openExternal(card.getAttribute('data-page'));
@@ -1233,6 +1415,8 @@
         var sub = card.getAttribute('data-sub');
         if (sub) copyText(sub); else showErr('ссылка недоступна');
       }
+      if (kind === 'qr') openQr(card.getAttribute('data-token'), card.getAttribute('data-page'));
+      if (kind === 'unmerge') doMerge(false, act);
     });
     $('btnReloadKeys').addEventListener('click', function () {
       var b = this;
@@ -1253,6 +1437,20 @@
       if (tg && typeof tg.close === 'function') { try { tg.close(); return; } catch (e) { /* noop */ } }
       hideSuccess();
     });
+
+    /* SPEC-MERGE: QR-оверлей объединённого ключа (null-гарды — кэш старого index.html) */
+    var btnQrClose = $('btnQrClose');
+    if (btnQrClose) btnQrClose.addEventListener('click', closeQr);
+    if (elQrOvl) {
+      elQrOvl.addEventListener('click', function (ev) {
+        if (ev.target === elQrOvl) closeQr(); /* тап по фону закрывает */
+      });
+    }
+    if (elQrImg) {
+      elQrImg.addEventListener('error', function () {
+        if (S.qrOpen) showErr('не удалось загрузить QR-код — попробуй ещё раз');
+      });
+    }
 
     /* помощь */
     $('acc').addEventListener('click', function (ev) {

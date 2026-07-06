@@ -103,6 +103,17 @@ function migrate() {
     db.exec('ALTER TABLE orders ADD COLUMN bonus_applied INTEGER DEFAULT 0');
   }
 
+  // SPEC-MERGE §2: объединённый ключ юзера. merged — включён ли режим объединения (0/1);
+  // merged_token — стабильный токен объединённой подписки (генерится один раз при первом
+  // включении, util.genToken; сохраняется при off — ссылка стабильна). columnExists-guard
+  // идемпотентен: на существующей БД не падает и ничего не ломает (старые ключи работают).
+  if (!columnExists('users', 'merged')) {
+    db.exec('ALTER TABLE users ADD COLUMN merged INTEGER DEFAULT 0');
+  }
+  if (!columnExists('users', 'merged_token')) {
+    db.exec('ALTER TABLE users ADD COLUMN merged_token TEXT');
+  }
+
   // ── SPEC-SOURCES §4/§5/§6: категория списка, ротация healthcheck, гео ──
   // list_type конфига: 'black' (файлы 1..25) | 'white' (файл 26 — РФ-whitelist). DEFAULT 'black'
   // → все существующие строки становятся black, продажа/выдача по-старому (обратная совместимость).
@@ -1099,6 +1110,197 @@ function ordersOfUser(userId) {
   ).all(Number(userId));
 }
 
+/* ─────────────── объединённый ключ (SPEC-MERGE §3/§4) ─────────────── */
+
+/** orders.regions (JSON-массив ISO) → массив строк (пустой при сбое). Внутренний. */
+function parseRegionsColumn(val) {
+  if (Array.isArray(val)) return val.filter((x) => typeof x === 'string');
+  try {
+    const a = JSON.parse(val || '[]');
+    return Array.isArray(a) ? a.filter((x) => typeof x === 'string') : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+/** orders.qty ({iso:count} JSON) → объект или null (старый заказ без qty). Внутренний. */
+function parseQtyColumn(val) {
+  if (val == null) return null;
+  let o = val;
+  if (typeof val === 'string') {
+    try { o = JSON.parse(val); } catch (e) { return null; }
+  }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+  return Object.keys(o).length ? o : null;
+}
+
+/**
+ * liveRowsForOrder(order) -> [config...] — РОВНО то, что попадёт в индивидуальную подписку заказа
+ * (SPEC §6 + SPEC-QTY §5): заказ с qty → configsForRegionsQty; старый (qty NULL) → configsForRegions
+ * + fallback. Пул — order.list_type (дефолт 'black'). Единый источник истины для buildSub и
+ * объединённого ключа (объединённый = дедуп(объединение индивидуальных подписок)).
+ */
+function liveRowsForOrder(order) {
+  if (!order) return [];
+  const listType = order.list_type === 'white' ? 'white' : 'black';
+  const qty = parseQtyColumn(order.qty);
+  if (qty) return configsForRegionsQty(qty, listType);
+  const regions = parseRegionsColumn(order.regions);
+  return configsForRegions(regions, listType).concat(fallbackForRegions(regions));
+}
+
+/** Канонический ключ сервера для дедупа объединённого ключа: host:port:uuid (SPEC-MERGE §4). */
+function serverKeyOf(row) {
+  const a = util.parseAuthority(row && row.uri);
+  const host = (row && row.host) || a.host;
+  const port = (row && row.port) || a.port;
+  return util.canonicalKey(host, port, a.uuid, true);
+}
+
+/**
+ * activeOrdersOf(userId) -> [order...] (SPEC-MERGE §3). Выданные заказы (paid|gift; FREE — как paid,
+ * т.к. создаётся со status='paid') с НЕ вышедшим сроком (now<=expires_at). Свежие сверху (id DESC).
+ */
+function activeOrdersOf(userId) {
+  const t = now();
+  return stmt(
+    `SELECT * FROM orders WHERE user_id=? AND status IN ('paid','gift')
+       AND expires_at IS NOT NULL AND expires_at >= ? ORDER BY id DESC`
+  ).all(Number(userId), t);
+}
+
+/**
+ * Ядро объединённого ключа (SPEC-MERGE §1/§4). Все АКТИВНЫЕ заказы юзера → их живые серверы, дедуп
+ * по host:port:uuid; владелец дубля — заказ с МАКС сроком (метка «до DD.MM» и жизнь сервера считаются
+ * по самому долгому активному заказу). Возвращает данные и для подписки, и для профиля/страницы:
+ *   { orders:N, servers:N(дедуп-живых), expiresMax, rows:[{row, expiresAt}],
+ *     regions:[{iso,nameRu,flag,qty,liveServers,expiresAt}] }
+ * rows — по убыванию срока-владельца (стабильно); regions — по nameRu. Пусто, если активных нет.
+ */
+function mergedBundle(userId) {
+  const active = activeOrdersOf(userId);
+  const expiresMax = active.reduce((m, o) => Math.max(m, Number(o.expires_at) || 0), 0);
+  // от самого «долгого» заказа к короткому → первый встреченный дубль = макс срок
+  const ordered = active
+    .slice()
+    .sort(
+      (a, b) =>
+        (Number(b.expires_at) || 0) - (Number(a.expires_at) || 0) ||
+        (Number(b.id) || 0) - (Number(a.id) || 0)
+    );
+
+  const seen = new Set();
+  const rows = [];
+  const regAgg = new Map(); // iso -> {iso,nameRu,flag,qty,liveServers,expiresAt}
+  const ensureReg = (iso, sample) => {
+    let ra = regAgg.get(iso);
+    if (!ra) {
+      ra = {
+        iso,
+        nameRu: util.nameRuOf(iso, sample && sample.country_name),
+        flag: (sample && sample.flag) || (iso && iso !== 'XX' ? util.isoToFlag(iso) : ''),
+        qty: 0,
+        liveServers: 0,
+        expiresAt: 0,
+      };
+      regAgg.set(iso, ra);
+    }
+    return ra;
+  };
+
+  for (const o of ordered) {
+    const exp = Number(o.expires_at) || 0;
+    const live = liveRowsForOrder(o);
+    const qtyMap = parseQtyColumn(o.qty);
+
+    // купленное ×N по региону (для разбивки) — суммируем по всем активным заказам юзера
+    if (qtyMap) {
+      for (const [isoRaw, c] of Object.entries(qtyMap)) {
+        const iso = String(isoRaw || '').trim().toUpperCase();
+        if (!/^[A-Z]{2}$/.test(iso)) continue;
+        const ra = ensureReg(iso, live.find((r) => r.country_iso === iso));
+        ra.qty += Math.max(0, Math.floor(Number(c) || 0));
+        ra.expiresAt = Math.max(ra.expiresAt, exp);
+      }
+    } else {
+      const byIso = new Map();
+      for (const row of live) byIso.set(row.country_iso, (byIso.get(row.country_iso) || 0) + 1);
+      for (const [iso, c] of byIso) {
+        const ra = ensureReg(iso, live.find((r) => r.country_iso === iso));
+        ra.qty += c;
+        ra.expiresAt = Math.max(ra.expiresAt, exp);
+      }
+    }
+
+    // живые серверы — дедуп по host:port:uuid ЧЕРЕЗ ВСЕ заказы
+    for (const row of live) {
+      const key = serverKeyOf(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ row, expiresAt: exp });
+      const iso = row.country_iso || 'XX';
+      const ra = ensureReg(iso, row);
+      ra.liveServers += 1;
+      ra.expiresAt = Math.max(ra.expiresAt, exp);
+    }
+  }
+
+  const regions = [...regAgg.values()].sort((a, b) =>
+    String(a.nameRu).localeCompare(String(b.nameRu), 'ru')
+  );
+  return { orders: active.length, servers: rows.length, expiresMax, rows, regions };
+}
+
+/**
+ * mergedSummary(userId) -> {regions, servers, expiresMax, orders} (SPEC-MERGE §3) — для профиля/
+ * страницы. servers — дедуп-живых; expiresMax — макс срок активных заказов; regions с купленным qty,
+ * числом живых серверов и своим сроком.
+ */
+function mergedSummary(userId) {
+  const b = mergedBundle(userId);
+  return { regions: b.regions, servers: b.servers, expiresMax: b.expiresMax, orders: b.orders };
+}
+
+/** Занят ли токен (среди order-токенов или чужих merged_token) — защита от коллизии при генерации. */
+function mergedTokenTaken(token) {
+  if (stmt('SELECT 1 AS x FROM orders WHERE token=? LIMIT 1').get(token)) return true;
+  if (stmt('SELECT 1 AS x FROM users WHERE merged_token=? LIMIT 1').get(token)) return true;
+  return false;
+}
+
+/**
+ * setMerged(userId, on) -> {merged, token} (SPEC-MERGE §3). on=true → merged=1 и, если merged_token
+ * ещё нет, сгенерить СТАБИЛЬНЫЙ токен (util.genToken; не меняется при повторных on/off). on=false →
+ * merged=0, токен ОСТАВИТЬ (ссылка стабильна). Апсертит user-строку при отсутствии.
+ */
+function setMerged(userId, on) {
+  const id = Number(userId);
+  const t = now();
+  stmt(
+    `INSERT INTO users(id, first_seen, last_seen) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING`
+  ).run(id, t, t);
+  const row = stmt('SELECT merged_token FROM users WHERE id=?').get(id);
+  let token = row && row.merged_token ? String(row.merged_token) : '';
+  if (on) {
+    if (!token) {
+      do {
+        token = util.genToken();
+      } while (mergedTokenTaken(token));
+    }
+    stmt('UPDATE users SET merged=1, merged_token=? WHERE id=?').run(token, id);
+    return { merged: 1, token };
+  }
+  stmt('UPDATE users SET merged=0 WHERE id=?').run(id);
+  return { merged: 0, token: token || null };
+}
+
+/** getUserByMergedToken(token) -> user|null (SPEC-MERGE §3) — резолвинг объединённой ссылки /s/:token. */
+function getUserByMergedToken(token) {
+  const t = String(token == null ? '' : token);
+  if (!t) return null;
+  return stmt('SELECT * FROM users WHERE merged_token=? LIMIT 1').get(t) || null;
+}
+
 /* ───────────────────── статистика и журнал ───────────────────── */
 
 function statsSummary() {
@@ -1315,6 +1517,12 @@ module.exports = {
   markOrderPaid,
   setOrderStatus,
   ordersOfUser,
+  activeOrdersOf,
+  liveRowsForOrder,
+  mergedBundle,
+  mergedSummary,
+  setMerged,
+  getUserByMergedToken,
   statsSummary,
   adminSummary,
   adminUserExists,

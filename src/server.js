@@ -307,6 +307,101 @@ function mapAdminOrder(row, now, summaryByIso) {
   };
 }
 
+/* ─────────────────── объединённый ключ (SPEC-MERGE §5) ─────────────────── */
+
+/**
+ * resolveToken(token) -> {kind:'order', order} | {kind:'merged', user} | null (SPEC-MERGE §5).
+ * Сперва пробуем заказ (обычный случай), затем объединённый токен юзера. TOKEN_RE-гейт как везде.
+ */
+function resolveToken(token) {
+  if (!TOKEN_RE.test(token)) return null;
+  let order = null;
+  try {
+    order = db.getOrderByToken(token);
+  } catch (e) {
+    logErr('resolveToken/order', e);
+  }
+  if (order) return { kind: 'order', order: order };
+  let user = null;
+  try {
+    user = db.getUserByMergedToken(token);
+  } catch (e) {
+    logErr('resolveToken/merged', e);
+  }
+  if (user) return { kind: 'merged', user: user };
+  return null;
+}
+
+/**
+ * Объект «единого ключа» для /api/me и /api/merge (SPEC-MERGE §5): токен, страница, подписка,
+ * серверов (дедуп-живых), макс срок, регионы с их qty/сроками. Данные — из db.mergedSummary.
+ */
+function mergedKeyObject(userId, token) {
+  const s = db.mergedSummary(userId);
+  const sub = subscription.subUrl(token);
+  return {
+    token: token,
+    page: subscription.pageUrl(token),
+    sub: sub,
+    servers: s.servers,
+    serversAvailable: s.servers,
+    expiresMax: s.expiresMax,
+    active: s.orders > 0,
+    orders: s.orders,
+    regions: s.regions.map((r) => ({
+      iso: r.iso,
+      nameRu: r.nameRu,
+      flag: r.flag,
+      qty: r.qty,
+      liveServers: r.liveServers,
+      expiresAt: r.expiresAt,
+    })),
+    links: subscription.deepLinks(sub),
+  };
+}
+
+/**
+ * Ответ /api/key/:token для объединённого токена (SPEC-MERGE §5): объединённые regions с их сроками,
+ * servers, active=есть ли активные заказы. Поля выровнены под форму заказа (regions/servers/sub/page/
+ * links/active/expiresAt), чтобы страница ключа рендерила объединённый ключ теми же средствами.
+ */
+function mergedKeyResponse(user) {
+  const token = user.merged_token;
+  const s = db.mergedSummary(user.id);
+  const sub = subscription.subUrl(token);
+  const regions = s.regions.map((r) => ({
+    iso: r.iso,
+    nameRu: r.nameRu,
+    flag: r.flag,
+    count: r.qty, // купленное ×N
+    available: r.liveServers, // доступно живых
+    expiresAt: r.expiresAt, // срок этого региона (свой заказ)
+  }));
+  // «частично» = есть регион, полностью погасший сейчас (0 живых при купленном qty>0)
+  const partial = regions.some((r) => (Number(r.count) || 0) > 0 && (Number(r.available) || 0) === 0);
+  const lr = inventory.lastRefresh || null;
+  return {
+    ok: true,
+    merged: true,
+    orderId: null,
+    status: 'merged',
+    regions: regions,
+    servers: s.servers,
+    serversAvailable: s.servers,
+    partial: partial,
+    note: partial ? 'Часть серверов временно недоступна — заменятся автоматически.' : null,
+    expiresAt: s.expiresMax,
+    expiresMax: s.expiresMax,
+    orders: s.orders,
+    active: s.orders > 0,
+    sub: sub,
+    page: subscription.pageUrl(token),
+    links: subscription.deepLinks(sub),
+    createdAt: null,
+    updatedAt: lr && lr.at ? lr.at : null,
+  };
+}
+
 /* ────────────────────────────── сервер ────────────────────────────── */
 
 function createServer(botApi) {
@@ -605,16 +700,96 @@ function createServer(botApi) {
       link: 'https://t.me/' + config.BOT_USERNAME + '?start=ref' + auth.user.id,
     };
 
-    res.json({ ok: true, orders: orders, free: free, bonus: bonus, ref: ref });
+    // SPEC-MERGE §5: всегда отдаём canMerge (≥2 активных заказа) и текущее состояние merged.
+    // Если merged включён и есть merged_token → ЕДИНЫЙ ключ (key) поверх списка orders (orders
+    // оставляем — mini app сам решит, что показать: при merged=1 индивидуальные скрываются в UI).
+    let canMerge = false;
+    try {
+      canMerge = (db.activeOrdersOf(auth.user.id) || []).length >= 2;
+    } catch (e) {
+      logErr('me/activeOrdersOf', e);
+    }
+    let mergedOn = false;
+    let key = null;
+    try {
+      const u = db.getUser(auth.user.id);
+      mergedOn = !!(u && u.merged === 1 && u.merged_token);
+      if (mergedOn) key = mergedKeyObject(auth.user.id, u.merged_token);
+    } catch (e) {
+      logErr('me/merged', e);
+    }
+
+    res.json({
+      ok: true,
+      orders: orders,
+      free: free,
+      bonus: bonus,
+      ref: ref,
+      merged: mergedOn,
+      canMerge: canMerge,
+      key: key,
+    });
+  });
+
+  /* POST /famas/api/merge — переключить объединённый ключ (SPEC-MERGE §5). */
+  app.post('/famas/api/merge', function (req, res) {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const auth = authFromInitData(body.initData);
+    if (!auth) {
+      return res.status(401).json({ ok: false, error: 'Авторизация не пройдена — открой магазин из Telegram' });
+    }
+    const on = body.on === true || body.on === 1 || body.on === '1' || body.on === 'true';
+
+    try {
+      db.upsertUser({
+        id: auth.user.id,
+        username: auth.user.username || null,
+        first_name: auth.user.first_name || null,
+      });
+    } catch (e) {
+      logErr('merge/upsertUser', e);
+    }
+
+    let state;
+    try {
+      state = db.setMerged(auth.user.id, on);
+    } catch (e) {
+      logErr('merge/setMerged', e);
+      return res.status(500).json({ ok: false, error: 'Не удалось изменить режим' });
+    }
+
+    let canMerge = false;
+    try {
+      canMerge = (db.activeOrdersOf(auth.user.id) || []).length >= 2;
+    } catch (e) {
+      logErr('merge/activeOrdersOf', e);
+    }
+
+    const merged = state.merged === 1 || state.merged === true;
+    const resp = { ok: true, merged: merged, canMerge: canMerge, mergedToken: state.token || null };
+    if (merged && state.token) resp.key = mergedKeyObject(auth.user.id, state.token);
+
+    try {
+      db.logEvent('merge_toggle', { userId: auth.user.id, on: merged });
+    } catch (e) {
+      /* журнал не критичен */
+    }
+
+    res.json(resp);
   });
 
   /* GET /famas/api/key/:token — данные ключа для страницы товара (key.html). */
   app.get('/famas/api/key/:token', function (req, res) {
     const token = String(req.params.token || '');
-    const order = TOKEN_RE.test(token) ? db.getOrderByToken(token) : null;
-    if (!order) {
+    // SPEC-MERGE §5: :token может быть объединённым — тогда отдаём объединённый ключ.
+    const r = resolveToken(token);
+    if (!r) {
       return res.status(404).json({ ok: false, error: 'Ключ не найден' });
     }
+    if (r.kind === 'merged') {
+      return res.json(mergedKeyResponse(r.user));
+    }
+    const order = r.order;
 
     const isos = orderRegions(order);
     const lt = order.list_type === 'white' ? 'white' : 'black'; // пул заказа (SPEC-SOURCES §4.4)
@@ -696,28 +871,34 @@ function createServer(botApi) {
   /* GET /famas/s/:token — подписка: заголовки из §6 + тело base64. */
   app.get('/famas/s/:token', function (req, res) {
     const token = String(req.params.token || '');
-    const order = TOKEN_RE.test(token) ? db.getOrderByToken(token) : null;
-    if (!order) {
+    // SPEC-MERGE §5: сперва заказ, затем объединённый токен юзера — тот же UA-gate/заголовки.
+    const r = resolveToken(token);
+    if (!r) {
       return res.status(404).type('text/plain; charset=utf-8').send('not found');
     }
 
     // SPEC-HARDEN ч.1 §3: /s не кешируем никогда (контент живой). Ставим до любой ветки.
     res.set('Cache-Control', 'no-store');
 
+    // страница-подсказка ведёт на страницу ключа (заказа ИЛИ объединённого).
+    const pageToken = r.kind === 'merged' ? r.user.merged_token : r.order.token;
+
     // SPEC-HARDEN ч.2 §1: UA-gate. Явный браузер/утилита (Mozilla/Chrome/Safari/curl/…) БЕЗ
     // ?app=1 и без VPN-маркера → страница-подсказку, НЕ сырые vless. Реальные VPN-клиенты (по
     // VPN_UA_ALLOW), незнакомые и пустые UA — обычную base64-подписку. Deep-links Happ/v2rayTun
-    // открывают приложение, которое само дёрнет /s со своим UA → пройдут gate.
+    // открывают приложение, которое само дёрнет /s со своим UA → пройдут gate. Для объединённого
+    // ключа gate идентичен (SPEC-MERGE §5).
     if (!forcesAppDelivery(req) && isBrowserLikeUA(req.get('user-agent'))) {
       res.set('Content-Type', 'text/html; charset=utf-8');
-      return res.status(200).send(subGateStubHtml(subscription.pageUrl(order.token)));
+      return res.status(200).send(subGateStubHtml(subscription.pageUrl(pageToken)));
     }
 
-    const sub = subscription.buildSub(order);
+    const sub =
+      r.kind === 'merged' ? subscription.buildMerged(r.user.id) : subscription.buildSub(r.order);
     if (sub && sub.headers && typeof sub.headers === 'object') {
       res.set(sub.headers);
     }
-    res.set('Cache-Control', 'no-store'); // buildSub мог не выставить — гарантируем no-store
+    res.set('Cache-Control', 'no-store'); // buildSub/buildMerged мог не выставить — гарантируем no-store
     res.set('Content-Type', 'text/plain; charset=utf-8');
     res.send(sub && typeof sub.b64 === 'string' ? sub.b64 : '');
   });
@@ -725,12 +906,13 @@ function createServer(botApi) {
   /* GET /famas/qr/:token.svg — QR-код ссылки-подписки. */
   app.get('/famas/qr/:token.svg', wrap(async function (req, res) {
     const token = String(req.params.token || '');
-    const order = TOKEN_RE.test(token) ? db.getOrderByToken(token) : null;
-    if (!order) {
+    // SPEC-MERGE §5: QR поддерживает и заказный, и объединённый токен (subUrl использует сам token).
+    const r = resolveToken(token);
+    if (!r) {
       return res.status(404).type('text/plain; charset=utf-8').send('not found');
     }
 
-    const svg = await QRCode.toString(subscription.subUrl(order.token), {
+    const svg = await QRCode.toString(subscription.subUrl(token), {
       type: 'svg',
       margin: 1,
       color: { dark: '#000000', light: '#ffffff' }

@@ -49,6 +49,8 @@ function plural(n, one, few, many) {
 }
 const daysWord = (n) => `${n} ${plural(n, 'день', 'дня', 'дней')}`;
 const regionsWord = (n) => `${n} ${plural(n, 'регион', 'региона', 'регионов')}`;
+/** DD.MM (Москва) из unix-секунд — метка «до DD.MM» в разбивке объединённого ключа (SPEC-MERGE §6). */
+const ddmm = (u) => fmtDate(u).slice(0, 5);
 
 function isAdmin(id) {
   return config.ADMIN_IDS.includes(Number(id));
@@ -430,6 +432,23 @@ function profileView(from) {
   } catch (e) {
     console.error('[bot] refInfo:', errText(e));
   }
+
+  // SPEC-MERGE §6: сколько активных заказов (для кнопки объединения) и включён ли merged.
+  let activeOrders = [];
+  try {
+    activeOrders = db.activeOrdersOf(from.id);
+  } catch (e) {
+    console.error('[bot] activeOrdersOf:', errText(e));
+  }
+  const canMerge = activeOrders.length >= 2;
+  let user = null;
+  try {
+    user = db.getUser(from.id);
+  } catch (e) {
+    /* не критично */
+  }
+  const isMerged = !!(user && user.merged === 1 && user.merged_token);
+
   const lines = [
     '👤 ПРОФИЛЬ',
     LINE,
@@ -439,16 +458,55 @@ function profileView(from) {
     `🎁 Бонус: ${refI.bonus} ⭐ · Приглашено: ${refI.count}`,
   ];
   const kb = new InlineKeyboard();
+
+  // ── SPEC-MERGE §6: включён merged → показываем ОДИН объединённый ключ + разбивку по регионам ──
+  if (isMerged) {
+    let sum = { regions: [], servers: 0, expiresMax: 0, orders: activeOrders.length };
+    try {
+      sum = db.mergedSummary(from.id);
+    } catch (e) {
+      console.error('[bot] mergedSummary:', errText(e));
+    }
+    const link = subscription.subUrl(user.merged_token);
+    const page = subscription.pageUrl(user.merged_token);
+    lines.push(
+      THIN,
+      '🧩 ОБЪЕДИНЁННЫЙ КЛЮЧ',
+      `Серверов внутри: ${sum.servers}${sum.expiresMax ? ` · до ${fmtDate(sum.expiresMax)}` : ''}`
+    );
+    if (sum.regions.length) {
+      lines.push('Внутри:');
+      for (const r of sum.regions) {
+        const flag = r.flag || isoToFlag(r.iso) || '';
+        const till = r.expiresAt ? ` до ${ddmm(r.expiresAt)}` : '';
+        lines.push(`${flag} ${esc(r.nameRu)} ×${r.qty}${till}`);
+      }
+    } else {
+      lines.push('Пока нет активных ключей — купи новый: /vpn');
+    }
+    lines.push('', 'ТВОЯ ССЫЛКА — ОДНА НА ВСЁ:', `<code>${esc(link)}</code>`, '(нажми — скопируется)');
+    kb.url('⬛ СТРАНИЦА КЛЮЧА', page).row();
+    kb.text('🔓 Разъединить ключи', 'merge:off').row();
+    kb.text('🎁 Пригласить', 'ref').text('🔐 Купить ещё', 'shop');
+    return { text: lines.join('\n'), kb };
+  }
+
+  // ── обычный список ключей (merged выключен) ──
   if (orders.length) {
     lines.push(THIN);
     const shown = orders.slice(0, 10);
     for (const o of shown) {
-      const active = o.expires_at && t <= o.expires_at;
+      const isActive = o.expires_at && t <= o.expires_at;
       const flags = flagsOf(parseRegions(o), meta) || '—';
       const till = o.expires_at ? fmtDate(o.expires_at) : '—';
-      lines.push(`#${o.id} · ${flags} · до ${till} · ${active ? '● активен' : '○ истёк'}`);
+      lines.push(`#${o.id} · ${flags} · до ${till} · ${isActive ? '● активен' : '○ истёк'}`);
     }
     if (orders.length > shown.length) lines.push(`… и ещё ${orders.length - shown.length}`);
+    // SPEC-MERGE §6: ≥2 активных заказа → предложить объединить всё в один ключ.
+    if (canMerge) {
+      lines.push('', `🧩 У тебя ${activeOrders.length} активных ключа — можно объединить в один.`);
+      kb.text('🧩 Объединить всё в один ключ', 'merge:on').row();
+    }
     for (let i = 0; i < shown.length; i += 2) {
       kb.text(`Ключ #${shown[i].id}`, `key:${shown[i].id}`);
       if (shown[i + 1]) kb.text(`Ключ #${shown[i + 1].id}`, `key:${shown[i + 1].id}`);
@@ -719,7 +777,7 @@ async function sendDelivery(api, chatId, order) {
       ? `○ Истёк: ${fmtDate(order.expires_at)} · новый — /vpn`
       : `Действует до: ${fmtDate(order.expires_at)}`;
 
-  const text = [
+  let text = [
     BRAND,
     LINE,
     `ЗАКАЗ #${order.id} · ${statusWord}`,
@@ -745,6 +803,23 @@ async function sendDelivery(api, chatId, order) {
     .row()
     .text('❓ Как подключить', 'help')
     .text('👤 Профиль', 'profile');
+
+  // SPEC-MERGE §6: если у владельца заказа включён объединённый ключ — заказ автоматически влит
+  // (merged = все активные заказы). Показываем это и даём кнопку на объединённую страницу;
+  // индивидуальная ссылка выше тоже работает (на случай, когда merged позже выключат).
+  try {
+    const owner = db.getUser(order.user_id);
+    if (owner && owner.merged === 1 && owner.merged_token) {
+      text +=
+        '\n' +
+        ['', THIN, '🧩 Добавлено в твой объединённый ключ —', 'он обновится сам. Открой его страницу:'].join(
+          '\n'
+        );
+      kb.row().url('🧩 ОБЪЕДИНЁННЫЙ КЛЮЧ', subscription.pageUrl(owner.merged_token));
+    }
+  } catch (e) {
+    /* не критично — просто без merged-блока */
+  }
 
   return api.sendMessage(chatId, text, msgOpts(kb));
 }
@@ -1431,6 +1506,52 @@ function createBot() {
     await ctx.answerCallbackQuery().catch(() => {});
     const v = helpView(isPrivateCtx(ctx));
     await ctx.reply(v.text, msgOpts(v.kb));
+  });
+
+  // SPEC-MERGE §6: объединить все активные ключи в один (merge:on) / разъединить (merge:off).
+  // После переключения перерисовываем карточку профиля (объединённый ключ ⇄ список).
+  bot.callbackQuery('merge:on', async (ctx) => {
+    let active = [];
+    try {
+      active = db.activeOrdersOf(ctx.from.id);
+    } catch (e) {
+      console.error('[bot] merge:on activeOrdersOf:', errText(e));
+    }
+    if (!active || active.length < 2) {
+      await ctx
+        .answerCallbackQuery({ text: 'Нужно минимум 2 активных ключа.', show_alert: true })
+        .catch(() => {});
+      return;
+    }
+    try {
+      db.setMerged(ctx.from.id, true);
+      try { db.logEvent('merge_toggle', { userId: ctx.from.id, on: true }); } catch (e) { /* ок */ }
+      await ctx.answerCallbackQuery({ text: 'Ключи объединены в один ⁂' }).catch(() => {});
+    } catch (e) {
+      console.error('[bot] merge:on:', errText(e));
+      await ctx
+        .answerCallbackQuery({ text: 'Не вышло объединить. Попробуй ещё раз.', show_alert: true })
+        .catch(() => {});
+      return;
+    }
+    const v = profileView(ctx.from);
+    await editOrReply(ctx, v.text, v.kb);
+  });
+
+  bot.callbackQuery('merge:off', async (ctx) => {
+    try {
+      db.setMerged(ctx.from.id, false);
+      try { db.logEvent('merge_toggle', { userId: ctx.from.id, on: false }); } catch (e) { /* ок */ }
+      await ctx.answerCallbackQuery({ text: 'Ключи разъединены' }).catch(() => {});
+    } catch (e) {
+      console.error('[bot] merge:off:', errText(e));
+      await ctx
+        .answerCallbackQuery({ text: 'Не вышло. Попробуй ещё раз.', show_alert: true })
+        .catch(() => {});
+      return;
+    }
+    const v = profileView(ctx.from);
+    await editOrReply(ctx, v.text, v.kb);
   });
 
   // ref (SPEC-REFERRAL §5) — новым сообщением: кнопка висит и на карточках выдачи/профиля.
