@@ -503,7 +503,7 @@ function availabilityMap(listType) {
   const map = new Map();
   const rows = stmt(
     `SELECT country_iso AS iso, COUNT(*) AS count FROM configs
-      WHERE active=1 AND alive=1 AND list_type=? GROUP BY country_iso`
+      WHERE active=1 AND alive=1 AND list_type=? AND country_iso!='XX' GROUP BY country_iso`
   ).all(lt);
   for (const r of rows) map.set(r.iso, Number(r.count) || 0);
   return map;
@@ -773,7 +773,7 @@ function regionsSummary(listType) {
   // регион с 0 живых не показывается и не продаётся. SPEC-SOURCES §4.3: с учётом list_type.
   const rows = stmt(
     `SELECT country_iso AS iso, MAX(country_name) AS name, MAX(flag) AS flag, COUNT(*) AS count
-     FROM configs WHERE active=1 AND alive=1 AND list_type=? GROUP BY country_iso`
+     FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso!='XX' GROUP BY country_iso`
   ).all(lt);
   return rows
     .filter((r) => r.count > 0)
