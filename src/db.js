@@ -37,6 +37,26 @@ const stmtCache = new Map();
 
 const now = () => Math.floor(Date.now() / 1000);
 
+/**
+ * SPEC-STABILITY2 §3: SQL-фрагмент " AND <col> NOT IN ('KP',...)" по config.COUNTRY_BLACKLIST.
+ * ISO строго [A-Z]{2} (валидируется в config.envIsoList) → инлайн безопасен от инъекций. Фрагмент
+ * КОНСТАНТЕН в пределах процесса (config не меняется в рантайме), поэтому кэш prepared-statements
+ * по SQL-тексту продолжает работать. Пустой блэклист → '' (запрос не меняется). Ставится РЯДОМ с
+ * существующим country_iso!='XX' во всех каталог-выборках: регион из блэклиста не показывается,
+ * не продаётся и не выдаётся (ложная геолокация вроде КНДР=CDN-anycast).
+ */
+function blSql(col) {
+  const bl = (config.COUNTRY_BLACKLIST || []).filter((s) => /^[A-Z]{2}$/.test(String(s)));
+  if (!bl.length) return '';
+  return ` AND ${col} NOT IN (${bl.map((c) => `'${c}'`).join(',')})`;
+}
+
+/** SPEC-STABILITY2 §3: минимум живых серверов, чтобы регион показывался/продавался (HAVING). */
+function minAliveToSell() {
+  const n = Math.floor(Number(config.MIN_ALIVE_TO_SELL));
+  return Number.isFinite(n) && n >= 1 ? n : 2;
+}
+
 function stmt(sql) {
   if (!db) throw new Error('db.init() ещё не вызван');
   let s = stmtCache.get(sql);
@@ -85,6 +105,12 @@ function migrate() {
   // (чтобы не пропадали мгновенно) — healthcheck сам расставит 0/1.
   if (!columnExists('configs', 'alive')) {
     db.exec('ALTER TABLE configs ADD COLUMN alive INTEGER DEFAULT 1');
+  }
+  // SPEC-STABILITY2 §2: счётчик ПОДРЯД-неудачных healthcheck-проверок для grace-логики. Сервер
+  // помечается мёртвым (alive=0) только когда alive_fails>=HEALTH_GRACE_FAILS — одиночный блип не
+  // выкидывает сервер из выдачи. DEFAULT 0: существующие/новые строки стартуют без штрафа.
+  if (!columnExists('configs', 'alive_fails')) {
+    db.exec('ALTER TABLE configs ADD COLUMN alive_fails INTEGER DEFAULT 0');
   }
   // SPEC-REFERRAL §2: реферальная программа. bonus_stars — пул бонус-звёзд-скидки;
   // referred_by — кто пригласил (ставится один раз, NULL если сам); ref_count — сколько привёл;
@@ -512,9 +538,12 @@ function normalizeQtyLenient(input) {
 function availabilityMap(listType) {
   const lt = listType === 'white' ? 'white' : 'black';
   const map = new Map();
+  // SPEC-STABILITY2 §3: + COUNTRY_BLACKLIST (не продаём ложные страны) + HAVING MIN_ALIVE_TO_SELL
+  // (хрупкий регион с 1 живым сервером не продаётся — потолок покупки = живые видимого региона).
   const rows = stmt(
     `SELECT country_iso AS iso, COUNT(*) AS count FROM configs
-      WHERE active=1 AND alive=1 AND list_type=? AND country_iso!='XX' GROUP BY country_iso`
+      WHERE active=1 AND alive=1 AND list_type=? AND country_iso!='XX'${blSql('country_iso')}
+      GROUP BY country_iso HAVING COUNT(*) >= ${minAliveToSell()}`
   ).all(lt);
   for (const r of rows) map.set(r.iso, Number(r.count) || 0);
   return map;
@@ -782,9 +811,12 @@ function regionsSummary(listType) {
   const pop = regionPopularity();
   // SPEC-QUALITY §3: регион считаем по живым серверам (active=1 AND alive=1);
   // регион с 0 живых не показывается и не продаётся. SPEC-SOURCES §4.3: с учётом list_type.
+  // SPEC-STABILITY2 §3: + COUNTRY_BLACKLIST (ложные страны не показываем) + HAVING MIN_ALIVE_TO_SELL
+  // (хрупкие регионы с <MIN живых скрыты — единая точка отказа не продаётся).
   const rows = stmt(
     `SELECT country_iso AS iso, MAX(country_name) AS name, MAX(flag) AS flag, COUNT(*) AS count
-     FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso!='XX' GROUP BY country_iso`
+     FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso!='XX'${blSql('country_iso')}
+     GROUP BY country_iso HAVING COUNT(*) >= ${minAliveToSell()}`
   ).all(lt);
   return rows
     .filter((r) => r.count > 0)
@@ -805,8 +837,10 @@ function configsForRegions(isos, listType) {
   const list = (Array.isArray(isos) ? isos : []).map((s) => String(s)).filter(Boolean);
   if (!list.length) return [];
   const ph = list.map(() => '?').join(',');
+  // SPEC-STABILITY2 §3: + COUNTRY_BLACKLIST (ложные страны не выдаём). MIN_ALIVE здесь НЕ применяется:
+  // выдача существующему заказу отдаёт что есть, даже если регион скрыт из каталога (хрупкий).
   return stmt(
-    `SELECT * FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso IN (${ph})
+    `SELECT * FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso IN (${ph})${blSql('country_iso')}
       ORDER BY country_name, city`
   ).all(lt, ...list);
 }
@@ -820,12 +854,17 @@ function fallbackForRegions(isos) {
   const list = (Array.isArray(isos) ? isos : []).map((s) => String(s)).filter(Boolean);
   const out = [];
   for (const iso of list) {
+    // SPEC-STABILITY2 §3: страна из COUNTRY_BLACKLIST не выдаётся даже как deep-fallback (ложная гео).
+    if (blSql('country_iso') && /^[A-Z]{2}$/.test(String(iso).toUpperCase()) &&
+        (config.COUNTRY_BLACKLIST || []).includes(String(iso).toUpperCase())) {
+      continue;
+    }
     const hasAlive = stmt(
-      'SELECT 1 AS x FROM configs WHERE active=1 AND alive=1 AND country_iso=? LIMIT 1'
+      `SELECT 1 AS x FROM configs WHERE active=1 AND alive=1 AND country_iso=?${blSql('country_iso')} LIMIT 1`
     ).get(iso);
     if (hasAlive) continue;
     const row = stmt(
-      'SELECT * FROM configs WHERE active=0 AND country_iso=? ORDER BY last_seen DESC LIMIT 1'
+      `SELECT * FROM configs WHERE active=0 AND country_iso=?${blSql('country_iso')} ORDER BY last_seen DESC LIMIT 1`
     ).get(iso);
     if (row) out.push(row);
   }
@@ -833,34 +872,39 @@ function fallbackForRegions(isos) {
 }
 
 /**
- * configsForRegionsQty(qtyMap) -> [config...] (SPEC-QTY §5 + SPEC-HARDEN ч.1 §3).
- * Для каждого региона берём РОВНО min(count, aliveCount) СВЕЖИХ ЖИВЫХ серверов
- * (active=1 AND alive=1), сорт last_seen DESC затем hash ASC (свежие первыми, стабильный
- * тай-брейк). Мёртвые (alive=0) в подписку НЕ попадают НИКОГДА, кроме края «0 живых в
- * регионе» → deep-fallback (1 самый свежий неактивный), чтобы ссылка старого заказа не
- * пустела. Если живых < count — отдаём сколько есть живых (НЕ добираем мёртвыми): купленный
- * ключ всегда состоит только из доступных серверов, а «недостающие» подтянутся сами, когда
- * серверы региона оживут (клиент перечитает подписку).
- * qtyMap = {iso:count} | Map | массив ISO (count=1). Мягкая нормализация (не бросает).
+ * configsForRegionsQty(qtyMap, listType, opts) -> [config...] (SPEC-QTY §5 + SPEC-HARDEN ч.1 §3 +
+ * SPEC-STABILITY2 §3). Для каждого региона берём min(count + reserve, aliveCount) СВЕЖИХ ЖИВЫХ
+ * серверов (active=1 AND alive=1), сорт last_seen DESC затем hash ASC (свежие первыми, стабильный
+ * тай-брейк) — купленные (qty) + резервные (reserve) живые ТОГО ЖЕ региона для МГНОВЕННОГО failover
+ * в приложении (моргнул купленный — приложение берёт резервный, ключ не «перестаёт работать»).
+ * opts.reserve — доп. живых серверов на регион (SPEC-STABILITY2 §1 SUB_RESERVE_PER_REGION). Обратная
+ * совместимость: без opts/reserve → reserve=0 → РОВНО min(qty, aliveCount) как раньше. Резерв НЕ
+ * влияет на цену/qty — это чистая надёжность.
+ * Строки внутри региона уникальны (hash=sha256(host:port) UNIQUE) — доп. дедуп не нужен. Мёртвые
+ * (alive=0) в подписку НЕ попадают НИКОГДА, кроме края «0 живых в регионе» → deep-fallback (1 самый
+ * свежий неактивный), чтобы ссылка старого заказа не пустела. COUNTRY_BLACKLIST-регион не выдаётся.
+ * MIN_ALIVE_TO_SELL здесь НЕ применяется: заказ на скрытый (хрупкий) регион всё равно отдаёт свои
+ * серверы (существующий клиент не отрезается). qtyMap = {iso:count} | Map | массив ISO (count=1).
  */
-function configsForRegionsQty(qtyMap, listType) {
+function configsForRegionsQty(qtyMap, listType, opts) {
   const lt = listType === 'white' ? 'white' : 'black';
+  const reserve = Math.max(0, Math.floor(Number(opts && opts.reserve) || 0));
   const map = normalizeQtyLenient(qtyMap);
   const out = [];
   const selAlive = stmt(
-    `SELECT * FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso=?
+    `SELECT * FROM configs WHERE active=1 AND alive=1 AND list_type=? AND country_iso=?${blSql('country_iso')}
       ORDER BY last_seen DESC, hash ASC`
   );
   const selFallback = stmt(
-    `SELECT * FROM configs WHERE active=0 AND list_type=? AND country_iso=?
+    `SELECT * FROM configs WHERE active=0 AND list_type=? AND country_iso=?${blSql('country_iso')}
       ORDER BY last_seen DESC, hash ASC LIMIT 1`
   );
   for (const [iso, count] of map) {
     if (count < 1) continue;
     const alive = selAlive.all(lt, iso);
     if (alive.length > 0) {
-      const take = Math.min(count, alive.length); // ровно min(qty, aliveCount)
-      for (let i = 0; i < take; i++) out.push(alive[i]);
+      const want = Math.min(count + reserve, alive.length); // купленные + резервные живые
+      for (let i = 0; i < want; i++) out.push(alive[i]);
     } else {
       // край: живых в регионе нет — 1 самый свежий неактивный (deep-fallback, как раньше)
       const fb = selFallback.get(lt, iso);
@@ -884,9 +928,10 @@ function aliveCountForRegions(isos, listType) {
   if (!list.length) return map;
   const uniq = [...new Set(list)];
   const ph = uniq.map(() => '?').join(',');
+  // SPEC-STABILITY2 §3: + COUNTRY_BLACKLIST (ложные страны считаем как 0 живых).
   const rows = stmt(
     `SELECT country_iso AS iso, COUNT(*) AS count FROM configs
-      WHERE active=1 AND alive=1 AND list_type=? AND country_iso IN (${ph}) GROUP BY country_iso`
+      WHERE active=1 AND alive=1 AND list_type=? AND country_iso IN (${ph})${blSql('country_iso')} GROUP BY country_iso`
   ).all(lt, ...uniq);
   for (const r of rows) map.set(r.iso, Number(r.count) || 0);
   return map;
@@ -906,42 +951,133 @@ function isBlacklistedHost(host) {
 }
 
 /**
- * hostsToCheck(limit) -> [{host, port}] — уникальные пары среди active=1 конфигов, исключая
- * заблэклисченные хосты и пустые host/port (для TCP-проверки живости, SPEC-QUALITY §4).
+ * SPEC-STABILITY2 §4: карта host:port, РЕАЛЬНО выданных в АКТИВНЫХ заказах (paid|gift, срок не вышел),
+ * включая резервные (reserve=SUB_RESERVE_PER_REGION — они тоже уже в ключах клиентов). Ключ
+ * "host\0port" → {host, port, tls}. tls=1 если конфиг tls/reality (для выбора TLS-проверки). Их
+ * healthcheck проверяет ПЕРВЫМИ каждый цикл. Внутренний; ошибки на отдельном заказе не роняют.
+ */
+function soldHostPortsMap() {
+  const map = new Map();
+  const reserve = Math.max(0, Math.floor(Number(config.SUB_RESERVE_PER_REGION) || 0));
+  let orders = [];
+  try {
+    orders = stmt(
+      `SELECT * FROM orders WHERE status IN ('paid','gift') AND expires_at IS NOT NULL AND expires_at >= ?`
+    ).all(now());
+  } catch (e) {
+    orders = [];
+  }
+  for (const o of orders) {
+    let rows = [];
+    try {
+      rows = liveRowsForOrder(o, { reserve });
+    } catch (e) {
+      rows = [];
+    }
+    for (const r of rows) {
+      const host = r && r.host ? String(r.host) : '';
+      const port = r && r.port ? Number(r.port) : 0;
+      if (!host || !port) continue;
+      const k = host + '\u0000' + port;
+      if (map.has(k)) continue;
+      const tls = /security=(?:reality|tls)/i.test(String((r && r.uri) || '')) ? 1 : 0;
+      map.set(k, { host, port, tls });
+    }
+  }
+  return map;
+}
+
+/**
+ * hostsToCheck(limit) -> [{host, port, tls}] — уникальные пары среди active=1 конфигов, исключая
+ * заблэклисченные хосты и пустые host/port (для TCP/TLS-проверки живости). tls=1 если конфиг
+ * tls/reality (SPEC-STABILITY2 §4 — inventory выбирает TLS-хендшейк при HEALTH_TLS).
  * alive НЕ фильтруем: ранее «мёртвый» (недоступный) хост надо перепроверить — он мог ожить.
  *
- * SPEC-SOURCES §5.2: РОТАЦИЯ — самые давно проверенные первыми (ORDER BY alive_checked_at ASC,
- * NULLS FIRST: никогда не проверенные — в приоритете). limit>0 ограничивает батч; limit пуст/0 →
- * все (обратная совместимость: hostsToCheck() без аргумента возвращает всё, как раньше).
+ * ПОРЯДОК (SPEC-STABILITY2 §4): сначала «проданные» (host:port из активных заказов — их проверяем
+ * каждый цикл, они реально у клиентов), затем ротация (SPEC-SOURCES §5.2: самые давно проверенные
+ * первыми, ORDER BY alive_checked_at ASC NULLS FIRST). limit>0 ограничивает ротационный батч; сверх
+ * него всегда добавляются все проданные. limit пуст/0 → все (обратная совместимость).
  */
 function hostsToCheck(limit) {
   let lim = Math.floor(Number(limit));
   if (!Number.isFinite(lim) || lim <= 0) lim = 0;
   const base =
-    `SELECT host, port, MIN(alive_checked_at) AS ck FROM configs
+    `SELECT host, port, MIN(alive_checked_at) AS ck,
+       MAX(CASE WHEN uri LIKE '%security=reality%' OR uri LIKE '%security=tls%' THEN 1 ELSE 0 END) AS tls
+      FROM configs
       WHERE active=1 AND host IS NOT NULL AND host<>'' AND port>0
       GROUP BY host, port ORDER BY (ck IS NULL) DESC, ck ASC`;
   const rows = lim > 0 ? stmt(base + ' LIMIT ?').all(lim) : stmt(base).all();
   const out = [];
+  const emitted = new Set();
+
+  // проданные — первыми (каждый цикл), даже если не попали в ротационный батч
+  let sold = null;
+  try {
+    sold = soldHostPortsMap();
+  } catch (e) {
+    sold = null;
+  }
+  if (sold && sold.size) {
+    for (const v of sold.values()) {
+      if (!v.host || !v.port || isBlacklistedHost(v.host)) continue;
+      const k = v.host + '\u0000' + v.port;
+      if (emitted.has(k)) continue;
+      emitted.add(k);
+      out.push({ host: String(v.host), port: Number(v.port) || 0, tls: v.tls ? 1 : 0 });
+    }
+  }
+
   for (const r of rows) {
     if (isBlacklistedHost(r.host)) continue;
-    out.push({ host: String(r.host), port: Number(r.port) || 0 });
+    const k = String(r.host) + '\u0000' + (Number(r.port) || 0);
+    if (emitted.has(k)) continue;
+    emitted.add(k);
+    out.push({ host: String(r.host), port: Number(r.port) || 0, tls: r.tls ? 1 : 0 });
   }
   return out;
 }
 
 /**
+ * SPEC-STABILITY2 §3: результат healthcheck с GRACE-логикой (одиночный блип не убивает сервер).
+ * setHealthResult(host, port, ok):
+ *   ok=true  → alive=1, alive_fails=0, alive_checked_at=now (первый успех — мгновенно жив).
+ *   ok=false → alive_fails++; alive=0 ТОЛЬКО когда alive_fails>=HEALTH_GRACE_FAILS, иначе alive
+ *              остаётся 1 (grace — сервер ещё считается живым). Всегда alive_checked_at=now.
+ * Обе SET-ветки в SQLite читают СТАРЫЕ значения строки, поэтому (alive_fails+1) в CASE и в
+ * присваивании alive_fails согласованы. Возвращает число затронутых строк (обычно 1 — hash по
+ * host:port UNIQUE). Это grace-путь для TCP/TLS-проверок; жёсткие setAliveByHostPort/Pattern — без grace.
+ */
+function setHealthResult(host, port, ok) {
+  const t = now();
+  const h = String(host == null ? '' : host);
+  const p = Number(port) || 0;
+  if (ok) {
+    return stmt(
+      'UPDATE configs SET alive=1, alive_fails=0, alive_checked_at=? WHERE host=? AND port=?'
+    ).run(t, h, p).changes;
+  }
+  const grace = Math.max(1, Math.floor(Number(config.HEALTH_GRACE_FAILS) || 2));
+  return stmt(
+    `UPDATE configs SET
+       alive_fails = COALESCE(alive_fails,0) + 1,
+       alive = CASE WHEN COALESCE(alive_fails,0) + 1 >= ? THEN 0 ELSE 1 END,
+       alive_checked_at = ?
+     WHERE host=? AND port=?`
+  ).run(grace, t, h, p).changes;
+}
+
+/**
  * Проставить alive всем конфигам с данным host:port + отметить время проверки (alive_checked_at)
- * для ротации (SPEC-SOURCES §5.2). Возвращает число затронутых строк.
+ * для ротации (SPEC-SOURCES §5.2). ЖЁСТКО (без grace) — для тестов/ручного оверрайда. При alive=1
+ * сбрасываем alive_fails=0 (сервер восстановлен). Возвращает число затронутых строк.
  */
 function setAliveByHostPort(host, port, alive) {
   const a = alive ? 1 : 0;
-  const info = stmt('UPDATE configs SET alive=?, alive_checked_at=? WHERE host=? AND port=?').run(
-    a,
-    now(),
-    String(host == null ? '' : host),
-    Number(port) || 0
-  );
+  // alive=1 → сбрасываем счётчик подряд-неудач (сервер восстановлен); alive=0 → счётчик не трогаем.
+  const info = stmt(
+    'UPDATE configs SET alive=?, alive_fails=CASE WHEN ?=1 THEN 0 ELSE alive_fails END, alive_checked_at=? WHERE host=? AND port=?'
+  ).run(a, a, now(), String(host == null ? '' : host), Number(port) || 0);
   return info.changes;
 }
 
@@ -1140,11 +1276,14 @@ function parseQtyColumn(val) {
  * + fallback. Пул — order.list_type (дефолт 'black'). Единый источник истины для buildSub и
  * объединённого ключа (объединённый = дедуп(объединение индивидуальных подписок)).
  */
-function liveRowsForOrder(order) {
+function liveRowsForOrder(order, opts) {
   if (!order) return [];
   const listType = order.list_type === 'white' ? 'white' : 'black';
+  const reserve = Math.max(0, Math.floor(Number(opts && opts.reserve) || 0));
   const qty = parseQtyColumn(order.qty);
-  if (qty) return configsForRegionsQty(qty, listType);
+  // SPEC-STABILITY2 §3: qty-путь получает резерв (купленные + резервные живые). Старый заказ
+  // (qty NULL) уже тянет ВСЕ серверы региона (configsForRegions) — резерв к нему не применим.
+  if (qty) return configsForRegionsQty(qty, listType, { reserve });
   const regions = parseRegionsColumn(order.regions);
   return configsForRegions(regions, listType).concat(fallbackForRegions(regions));
 }
@@ -1177,7 +1316,11 @@ function activeOrdersOf(userId) {
  *     regions:[{iso,nameRu,flag,qty,liveServers,expiresAt}] }
  * rows — по убыванию срока-владельца (стабильно); regions — по nameRu. Пусто, если активных нет.
  */
-function mergedBundle(userId) {
+function mergedBundle(userId, opts) {
+  // SPEC-STABILITY2 §3/§4: reserve прокидывается в каждый заказ (buildMerged передаёт
+  // SUB_RESERVE_PER_REGION → объединённая подписка тоже содержит резервные живые для failover).
+  // mergedSummary (профиль/страница) зовёт без reserve → счётчики liveServers = купленное-по-живым.
+  const reserve = Math.max(0, Math.floor(Number(opts && opts.reserve) || 0));
   const active = activeOrdersOf(userId);
   const expiresMax = active.reduce((m, o) => Math.max(m, Number(o.expires_at) || 0), 0);
   // от самого «долгого» заказа к короткому → первый встреченный дубль = макс срок
@@ -1210,7 +1353,7 @@ function mergedBundle(userId) {
 
   for (const o of ordered) {
     const exp = Number(o.expires_at) || 0;
-    const live = liveRowsForOrder(o);
+    const live = liveRowsForOrder(o, { reserve });
     const qtyMap = parseQtyColumn(o.qty);
 
     // купленное ×N по региону (для разбивки) — суммируем по всем активным заказам юзера
@@ -1508,6 +1651,7 @@ module.exports = {
   hostsToCheck,
   hostsForGeo,
   setGeo,
+  setHealthResult,
   setAliveByHostPort,
   setAliveByHostPattern,
   aliveStats,

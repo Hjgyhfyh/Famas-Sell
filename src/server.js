@@ -174,6 +174,19 @@ function sumQty(qty) {
   return n;
 }
 
+// SPEC-STABILITY2 §5: пометки для выдачи, когда живых серверов временно меньше купленного. Ключ
+// НИКОГДА не выглядит «пропавшим»: при 0 живых показываем усиленный текст «обновляются, скоро
+// вернутся» (не «пусто/исчезло»); при частичной недоступности — мягкую «часть недоступна».
+const NOTE_REFRESHING = '△ серверы временно обновляются, скоро вернутся';
+const NOTE_PARTIAL = 'Часть серверов временно недоступна — заменятся автоматически.';
+function serverNote(available, purchased) {
+  const a = Number(available) || 0;
+  const p = Number(purchased) || 0;
+  if (p > 0 && a === 0) return NOTE_REFRESHING; // 0 живых, но заказ куплен → «обновляются»
+  if (a < p) return NOTE_PARTIAL; // часть недоступна
+  return null;
+}
+
 /** Заказ «действует»: оплачен/подарен и срок не вышел (§6: expired = now > expires_at). */
 function isOrderActive(order, now) {
   return Boolean(
@@ -377,8 +390,13 @@ function mergedKeyResponse(user) {
     available: r.liveServers, // доступно живых
     expiresAt: r.expiresAt, // срок этого региона (свой заказ)
   }));
-  // «частично» = есть регион, полностью погасший сейчас (0 живых при купленном qty>0)
-  const partial = regions.some((r) => (Number(r.count) || 0) > 0 && (Number(r.available) || 0) === 0);
+  // «частично» = есть регион, полностью погасший сейчас (0 живых при купленном qty>0), либо
+  // суммарно живых меньше купленного. SPEC-STABILITY2 §5: при 0 живых во всём ключе — «обновляются».
+  const purchasedTotal = regions.reduce((n, r) => n + (Number(r.count) || 0), 0);
+  const availTotal = Number(s.servers) || 0;
+  const partial =
+    availTotal < purchasedTotal ||
+    regions.some((r) => (Number(r.count) || 0) > 0 && (Number(r.available) || 0) === 0);
   const lr = inventory.lastRefresh || null;
   return {
     ok: true,
@@ -389,7 +407,7 @@ function mergedKeyResponse(user) {
     servers: s.servers,
     serversAvailable: s.servers,
     partial: partial,
-    note: partial ? 'Часть серверов временно недоступна — заменятся автоматически.' : null,
+    note: serverNote(availTotal, purchasedTotal),
     expiresAt: s.expiresMax,
     expiresMax: s.expiresMax,
     orders: s.orders,
@@ -669,7 +687,11 @@ function createServer(botApi) {
         page: subscription.pageUrl(o.token),
         sub: subscription.subUrl(o.token),
         servers: servers,
-        serversAvailable: serversAvailable
+        serversAvailable: serversAvailable,
+        // SPEC-STABILITY2 §5: заказ остаётся видимым даже при 0 живых (ordersOfUser НЕ фильтрует
+        // по живости) — с пометкой «обновляются, скоро вернутся» вместо исчезновения.
+        partial: serversAvailable < servers,
+        note: serverNote(serversAvailable, servers)
       };
     });
 
@@ -857,7 +879,8 @@ function createServer(botApi) {
       servers: serversPurchased,          // Σqty (новые) / configs len (старые) — купленное
       serversAvailable: serversAvailable, // доступно живых сейчас (SPEC-HARDEN ч.1 §5)
       partial: partial,                   // доступно меньше купленного (часть серверов недоступна)
-      note: partial ? 'Часть серверов временно недоступна — заменятся автоматически.' : null,
+      // SPEC-STABILITY2 §5: при 0 живых — «обновляются, скоро вернутся» (ключ не «исчезает»).
+      note: serverNote(serversAvailable, serversPurchased),
       expiresAt: order.expires_at || null,
       active: isOrderActive(order, nowSec()),
       sub: sub,

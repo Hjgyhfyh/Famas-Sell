@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
+const tls = require('node:tls');
 const dns = require('node:dns').promises;
 const crypto = require('node:crypto');
 const config = require('./config');
@@ -109,6 +110,57 @@ function tcpAlive(host, port, timeoutMs) {
   });
 }
 
+/**
+ * SPEC-STABILITY2 §4: одна TLS-проверка живости host:port через node:tls. Успех = событие
+ * 'secureConnect' (сервер РЕАЛЬНО завершил TLS-хендшейк) → true; ошибка/таймаут → false. Точнее
+ * TCP: ловит «порт открыт, но TLS битый/не отвечает» — прямой кейс «работает-перестаёт». Для
+ * reality/tls-vless это валидная проверка (сервер обязан говорить TLS, чтобы клиент подключился).
+ * rejectUnauthorized:false — важен сам факт живого TLS, не валидность cert. SNI ставим для доменов
+ * (не для IP). Никогда не бросает, не оставляет висящих сокетов/таймеров.
+ */
+function tlsAlive(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    let socket;
+    let timer = null;
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      try {
+        if (socket) socket.destroy();
+      } catch (e) {
+        // сокет уже закрыт
+      }
+      resolve(ok);
+    };
+    const h = String(host);
+    const opts = {
+      host: h,
+      port: Number(port) || 0,
+      rejectUnauthorized: false,
+      // SNI только для hostname (для IP — не ставим: некоторые стеки на IP+SNI рвут соединение)
+      servername: net.isIP(h) ? undefined : h,
+    };
+    try {
+      socket = tls.connect(opts);
+    } catch (e) {
+      resolve(false);
+      return;
+    }
+    timer = setTimeout(() => finish(false), Math.max(1, Number(timeoutMs) || 4000));
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    socket.once('secureConnect', () => finish(true));
+    socket.once('error', () => finish(false));
+    socket.once('timeout', () => finish(false));
+    try {
+      socket.setTimeout(Math.max(1, Number(timeoutMs) || 4000));
+    } catch (e) {
+      // не критично
+    }
+  });
+}
+
 /** Прогнать worker по items пулом заданного размера; results[i] соответствует items[i]. */
 async function runPool(items, concurrency, worker) {
   const results = new Array(items.length);
@@ -167,8 +219,16 @@ async function runHealthcheck() {
       }
       if (hosts.length) {
         const timeoutMs = config.HEALTHCHECK_TIMEOUT_MS;
-        const conc = config.HEALTHCHECK_CONCURRENCY;
-        const results = await runPool(hosts, conc, (h) => tcpAlive(h.host, h.port, timeoutMs));
+        // SPEC-STABILITY2 §4: TLS-хендшейк дороже TCP — конкурентность ≤64 (лимит FD/эфемерных
+        // портов на VDS, ulimit ~1024). При HEALTH_TLS=0 (только TCP) держим настроенную.
+        const useTls = !!config.HEALTH_TLS;
+        const conc = useTls
+          ? Math.min(Math.max(1, Number(config.HEALTHCHECK_CONCURRENCY) || 64), 64)
+          : Math.max(1, Number(config.HEALTHCHECK_CONCURRENCY) || 64);
+        // tls/reality-конфиги (h.tls=1) проверяем TLS-хендшейком, остальные — TCP (SPEC-STABILITY2 §4).
+        const probe = (h) =>
+          useTls && h.tls ? tlsAlive(h.host, h.port, timeoutMs) : tcpAlive(h.host, h.port, timeoutMs);
+        const results = await runPool(hosts, conc, probe);
         const checked = hosts.length;
         let up = 0;
         for (let i = 0; i < checked; i++) if (results[i] === true) up++;
@@ -188,11 +248,14 @@ async function runHealthcheck() {
             ['9.9.9.9', 443],
             ['github.com', 443],
           ];
+          // Канарейку проверяем ТЕМ ЖЕ методом, что и батч (SPEC-STABILITY2 §4): если включён TLS —
+          // публичные 443 говорят TLS, поэтому провал канареек = наш TLS-путь/сеть сломан → сейфгард
+          // (не применяем массовую смерть от TLS-false-negative). TCP-режим — как раньше.
+          const cprobe = (c) =>
+            useTls ? tlsAlive(c[0], c[1], timeoutMs) : tcpAlive(c[0], c[1], timeoutMs);
           let canaryUp = 0;
           try {
-            const cr = await runPool(canaries, canaries.length, (c) =>
-              tcpAlive(c[0], c[1], timeoutMs)
-            );
+            const cr = await runPool(canaries, canaries.length, cprobe);
             canaryUp = cr.filter((x) => x === true).length;
           } catch (e) {
             canaryUp = 0;
@@ -218,10 +281,13 @@ async function runHealthcheck() {
               `${down}/${checked} недоступны (${Math.round(deadFraction * 100)}%) — TCP не применён`
           );
         } else {
+          // SPEC-STABILITY2 §3: результаты применяем через setHealthResult (GRACE) — одиночный
+          // провал НЕ убивает сервер, только alive_fails++; alive=0 лишь после HEALTH_GRACE_FAILS
+          // подряд. Успех — мгновенно alive=1, alive_fails=0.
           for (let i = 0; i < checked; i++) {
             const h = hosts[i];
             try {
-              db.setAliveByHostPort(h.host, h.port, results[i] === true ? 1 : 0);
+              db.setHealthResult(h.host, h.port, results[i] === true);
             } catch (e) {
               // отдельная запись не должна ронять прогон
             }
@@ -653,4 +719,12 @@ function start() {
   if (hcTimer && typeof hcTimer.unref === 'function') hcTimer.unref();
 }
 
-module.exports = { start, refreshNow, runHealthcheck: runHealthcheckGuarded, lastRefresh };
+module.exports = {
+  start,
+  refreshNow,
+  runHealthcheck: runHealthcheckGuarded,
+  lastRefresh,
+  // SPEC-STABILITY2 §4: экспортируем пробы для тестов (TLS-живой→ok; TCP-открыт-но-не-TLS→мёртв).
+  tlsAlive,
+  tcpAlive,
+};

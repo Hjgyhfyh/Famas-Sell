@@ -760,6 +760,8 @@ async function sendDelivery(api, chatId, order) {
     if (available > purchased) available = purchased; // старый заказ: не превышаем показанное
   }
   const partial = available < purchased;
+  // SPEC-STABILITY2 §5: 0 живых, но заказ куплен → ключ НЕ «исчезает», показываем «обновляются».
+  const empty = purchased > 0 && available === 0;
   const serversLine = partial
     ? `Серверов внутри: ${available} из ${purchased}`
     : `Серверов внутри: ${available}`;
@@ -783,7 +785,11 @@ async function sendDelivery(api, chatId, order) {
     `ЗАКАЗ #${order.id} · ${statusWord}`,
     `Регионы: ${regionsLine}`,
     serversLine,
-    ...(partial ? ['△ часть серверов временно недоступна — заменятся автоматически'] : []),
+    ...(empty
+      ? ['△ серверы временно обновляются, скоро вернутся']
+      : partial
+        ? ['△ часть серверов временно недоступна — заменятся автоматически']
+        : []),
     tillLine,
     '',
     'ТВОЯ ССЫЛКА — ОДНА НА ВСЁ:',

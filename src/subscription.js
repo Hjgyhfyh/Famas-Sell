@@ -61,7 +61,10 @@ function buildSub(order) {
     // (заказ с qty → РОВНО купленное на регион, стабильно; старый заказ qty NULL → все серверы + fallback;
     // пул order.list_type). Ту же выборку дедупит объединённый ключ (SPEC-MERGE §4): merged =
     // дедуп(объединение индивидуальных подписок).
-    lines = db.liveRowsForOrder(order).map(rebrandUri);
+    // SPEC-STABILITY2 §3/§4: reserve=SUB_RESERVE_PER_REGION — сверх купленного qty кладём резервные
+    // живые серверы региона, чтобы приложение мгновенно переключалось (failover), ключ не «перестаёт
+    // работать». Резерв не влияет на цену/qty (чистая надёжность).
+    lines = db.liveRowsForOrder(order, { reserve: config.SUB_RESERVE_PER_REGION }).map(rebrandUri);
   }
 
   const b64 = util.b64utf8(lines.join('\n'));
@@ -109,7 +112,9 @@ function rebrandMergedUri(row, expiresAt) {
  * (как истёкший). UA-gate (SPEC-HARDEN) применяется на server-слое так же, как для /s/:token заказа.
  */
 function buildMerged(userId) {
-  const bundle = db.mergedBundle(userId);
+  // SPEC-STABILITY2 §3/§4: объединённая подписка тоже с резервом (failover для каждого региона).
+  // Отображение (профиль/страница) берёт db.mergedSummary без резерва — счётчики = купленное-по-живым.
+  const bundle = db.mergedBundle(userId, { reserve: config.SUB_RESERVE_PER_REGION });
   const lines = bundle.rows.map((r) => rebrandMergedUri(r.row, r.expiresAt));
   const b64 = util.b64utf8(lines.join('\n'));
 

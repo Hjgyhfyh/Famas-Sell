@@ -35,6 +35,21 @@ function envList(name, def) {
   return arr.length ? arr : def;
 }
 
+/**
+ * SPEC-STABILITY2 §1: список ISO-стран из env (через запятую), UPPERCASE, строго [A-Z]{2}.
+ * Некорректные элементы отбрасываются; пусто → def. Используется для COUNTRY_BLACKLIST —
+ * значения затем безопасно инлайнятся в SQL (валидированы как ровно 2 латинские буквы).
+ */
+function envIsoList(name, def) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return def;
+  const arr = String(raw)
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => /^[A-Z]{2}$/.test(s));
+  return arr.length ? arr : def;
+}
+
 // SPEC-QUALITY §1: заведомо ненадёжные хосты (free-хостинги, туннели). Если host сервера
 // содержит любую из этих подстрок — сервер считаем «мусорным» (alive=0), не продаём/не выдаём.
 const DEFAULT_HOST_BLACKLIST = [
@@ -65,6 +80,11 @@ const DEFAULT_BROWSER_UA_BLOCK = [
 // SPEC-SOURCES §2.1: какие протоколы продаём/парсим. По умолчанию только vless (≈96% каталога);
 // не-vless (trojan/ss/vmess/hysteria2/…) сознательно отбрасываются на парсинге. env-переопределяемый.
 const DEFAULT_ALLOWED_PROTOCOLS = ['vless'];
+
+// SPEC-STABILITY2 §1: ISO-страны, которые НИКОГДА не показываем/не продаём/не выдаём — заведомо
+// ложная геолокация (напр. KP=КНДР появляется из-за CDN-геолокации Fastly/anycast, реального узла
+// там нет). Список через запятую в env COUNTRY_BLACKLIST переопределяет. UPPERCASE, строго [A-Z]{2}.
+const DEFAULT_COUNTRY_BLACKLIST = ['KP'];
 
 /**
  * SPEC-SOURCES §1.2: реестр источников каталога. Приоритет:
@@ -194,6 +214,26 @@ const config = {
   VPN_UA_ALLOW: envList('VPN_UA_ALLOW', DEFAULT_VPN_UA_ALLOW),
   // Явные браузеры/утилиты (подстроки UA, lowercase) — им отдаём страницу-подсказку. env-переопределяемый.
   BROWSER_UA_BLOCK: envList('BROWSER_UA_BLOCK', DEFAULT_BROWSER_UA_BLOCK),
+
+  // ── SPEC-STABILITY2 §1: отказоустойчивость ключа (ключ НИКОГДА не должен пропадать) ──
+  // Сколько ДОПОЛНИТЕЛЬНЫХ живых серверов региона класть в подписку сверх купленного qty —
+  // для мгновенного failover в VPN-приложении (моргнул один — приложение берёт следующий, ключ
+  // не «перестаёт работать»). Не влияет на цену/qty. 0 = выключить резерв. Дефолт 2. Клампится ≥0.
+  SUB_RESERVE_PER_REGION: Math.max(0, Math.floor(envNum('SUB_RESERVE_PER_REGION', 2))),
+  // Регион с меньшим числом ЖИВЫХ серверов не показывается и не продаётся (слишком хрупкий: 1
+  // сервер = единая точка отказа). Существующие заказы на такой регион продолжают отдавать что есть.
+  // Дефолт 2. Клампится ≥1 (регион с 0 живых не появляется в каталоге в любом случае).
+  MIN_ALIVE_TO_SELL: Math.max(1, Math.floor(envNum('MIN_ALIVE_TO_SELL', 2))),
+  // Сервер помечается мёртвым только после стольких ПОДРЯД неудачных healthcheck-проверок —
+  // одиночный сетевой блип не выкидывает сервер из выдачи (grace). Первый успех — мгновенно жив.
+  // Дефолт 2. Клампится ≥1 (1 = без grace: первый же провал убивает).
+  HEALTH_GRACE_FAILS: Math.max(1, Math.floor(envNum('HEALTH_GRACE_FAILS', 2))),
+  // Для tls/reality-конфигов проверять полноценный TLS-хендшейк (точнее TCP: ловит «порт открыт,
+  // но сервер битый» — прямой кейс «работает-перестаёт»). 1=вкл (дефолт), 0=только TCP как раньше.
+  HEALTH_TLS: envBool('HEALTH_TLS', 1),
+  // ISO-страны, которые никогда не показываем/не продаём/не выдаём (ложная геолокация, напр. KP).
+  // env COUNTRY_BLACKLIST (через запятую) переопределяет. UPPERCASE, строго [A-Z]{2}.
+  COUNTRY_BLACKLIST: envIsoList('COUNTRY_BLACKLIST', DEFAULT_COUNTRY_BLACKLIST),
 };
 
 // Каталог для БД должен существовать до открытия better-sqlite3.
