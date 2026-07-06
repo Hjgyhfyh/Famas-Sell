@@ -308,6 +308,8 @@ function mapAdminOrder(row, now, summaryByIso) {
     username: row.username || null,
     firstName: row.first_name || null,
     kind: kind,
+    // SPEC-IDEAS §1: renewal-«чек» — id продлённого заказа (NULL у обычных покупок).
+    renewOf: row.renew_of != null ? Number(row.renew_of) : null,
     stars: Number(row.stars) || 0,
     servers: servers,
     regions: regions,
@@ -417,6 +419,10 @@ function mergedKeyResponse(user) {
     links: subscription.deepLinks(sub),
     createdAt: null,
     updatedAt: lr && lr.at ? lr.at : null,
+    // SPEC-IDEAS §1: объединённый ключ целиком не продлевается — продлеваются отдельные заказы.
+    canRenew: false,
+    renewStars: null,
+    renewDays: null,
   };
 }
 
@@ -692,6 +698,19 @@ function createServer(botApi) {
       } catch (e) {
         logErr('me/aliveCountForRegions', e);
       }
+      // SPEC-IDEAS §1: продление — доступно для любого выданного ключа (активного и истёкшего);
+      // цена = повтор заказа (renewQuote чистый, ничего не списывает).
+      let canRenew = false;
+      let renewStars = null;
+      let renewDays = null;
+      try {
+        const rq = db.renewQuote(o);
+        canRenew = !!o.expires_at; // как в POST /api/renew: без срока продлевать нечего
+        renewStars = rq.stars;
+        renewDays = rq.days;
+      } catch (e) {
+        canRenew = false;
+      }
       return {
         id: o.id,
         regions: regions,
@@ -706,7 +725,10 @@ function createServer(botApi) {
         // SPEC-STABILITY2 §5: заказ остаётся видимым даже при 0 живых (ordersOfUser НЕ фильтрует
         // по живости) — с пометкой «обновляются, скоро вернутся» вместо исчезновения.
         partial: serversAvailable < servers,
-        note: serverNote(serversAvailable, servers)
+        note: serverNote(serversAvailable, servers),
+        canRenew: canRenew,
+        renewStars: renewStars,
+        renewDays: renewDays
       };
     });
 
@@ -815,6 +837,159 @@ function createServer(botApi) {
     res.json(resp);
   });
 
+  /* POST /famas/api/renew — продление ключа (SPEC-IDEAS §1): {initData, orderId} →
+   * renewal-заказ владельца этого orderId (regions/qty/list_type — копия, renew_of=origId).
+   * free/bonus применяются как в обычной покупке (атомарно, db.reserveRenewal). Полностью
+   * покрыто скидками → продлеваем СРАЗУ (без инвойса — XTR на 0 нельзя); иначе invoiceLink,
+   * а applyRenewal сработает в боте на successful_payment (строго один раз, гейт wasPending). */
+  app.post('/famas/api/renew', wrap(async function (req, res) {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const auth = authFromInitData(body.initData);
+    if (!auth) {
+      return res.status(401).json({ ok: false, error: 'Авторизация не пройдена — открой магазин из Telegram' });
+    }
+
+    const orderId = Math.floor(Number(body.orderId));
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({ ok: false, error: 'Некорректный номер заказа' });
+    }
+    let order = null;
+    try {
+      order = db.getOrder(orderId);
+    } catch (e) {
+      logErr('renew/getOrder', e);
+    }
+    // чужой/несуществующий — единый 404 (не палим чужие номера заказов)
+    if (!order || Number(order.user_id) !== Number(auth.user.id)) {
+      return res.status(404).json({ ok: false, error: 'Ключ не найден' });
+    }
+    if ((order.status !== 'paid' && order.status !== 'gift') || order.renew_of != null || !order.expires_at) {
+      return res.status(400).json({ ok: false, error: 'Этот заказ нельзя продлить' });
+    }
+
+    // АТОМАРНО (SPEC-FREE §7b): free/bonus списываются прямо сейчас; ошибка → ничего не списано.
+    let q;
+    try {
+      q = db.reserveRenewal(auth.user.id, order);
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: (e && e.message) || 'Не удалось посчитать продление' });
+    }
+
+    // Полностью покрыто free/бонусом: продлеваем сразу, БЕЗ invoiceLink и botApi.
+    if (q.fullyFree) {
+      const created = db.createOrder({
+        userId: auth.user.id,
+        regions: order.regions, // JSON-строка — копия оригинала
+        qty: order.qty,
+        stars: 0,
+        status: 'paid',
+        days: q.days,
+        freeApplied: q.freeUsed,
+        bonusApplied: q.bonusUsed,
+        chargeId: 'FREE',
+        listType: order.list_type,
+        renewOf: order.id
+      });
+      if (!created || !created.id) {
+        return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
+      }
+      let orig = null;
+      try {
+        orig = db.applyRenewal(order.id, q.days);
+      } catch (e) {
+        logErr('renew/applyRenewal', e);
+      }
+      try {
+        db.logEvent('renewal', {
+          orderId: created.id, renewOf: order.id, userId: auth.user.id,
+          stars: 0, free: true, freeApplied: q.freeUsed, bonusApplied: q.bonusUsed
+        });
+      } catch (e) {
+        logErr('renew/logEvent', e);
+      }
+      // SPEC-LOG §5: транзакция реальная (0⭐ по free/бонусам) — в канал как free. Fire-and-forget.
+      try {
+        const fullOrder = db.getOrder(created.id);
+        saleslog.logSale(botApi, fullOrder, 'free').catch(() => {});
+      } catch (e) {
+        logErr('renew/saleslog', e);
+      }
+      return res.json({
+        ok: true,
+        free: true,
+        renewed: true,
+        orderId: created.id,
+        renewOf: order.id,
+        days: q.days,
+        expiresAt: orig ? orig.expires_at : null,
+        freeApplied: q.freeUsed,
+        bonusApplied: q.bonusUsed
+      });
+    }
+
+    // Платное продление: pending renewal-заказ + инвойс ровно на q.stars (инвойс на 0 не создаётся).
+    const created = db.createOrder({
+      userId: auth.user.id,
+      regions: order.regions,
+      qty: order.qty,
+      stars: q.stars,
+      status: 'pending',
+      days: q.days,
+      freeApplied: q.freeUsed,
+      bonusApplied: q.bonusUsed,
+      listType: order.list_type,
+      renewOf: order.id
+    });
+    if (!created || !created.id) {
+      return res.status(500).json({ ok: false, error: 'Не удалось создать заказ' });
+    }
+
+    if (!botApi || typeof botApi.createInvoiceLink !== 'function') {
+      logErr('renew/invoice', new Error('botApi.createInvoiceLink недоступен'));
+      return res.status(503).json({ ok: false, error: 'Оплата временно недоступна, попробуй позже' });
+    }
+
+    const dWord = plural(q.days, 'день', 'дня', 'дней');
+    let description = 'Продление ключа #' + order.id + ' · +' + q.days + ' ' + dWord;
+    if (q.freeUsed > 0) description += ' · −' + q.freeUsed + ' бесплатно';
+    if (q.bonusUsed > 0) description += ' · −' + q.bonusUsed + '⭐ бонус';
+
+    let invoiceLink;
+    try {
+      invoiceLink = await botApi.createInvoiceLink(
+        'FAMAS ⁂ Продление ключа',
+        description.slice(0, 255),
+        'order:' + created.id,
+        '', // provider_token пустой — Telegram Stars
+        'XTR',
+        [{ label: 'Продление · ' + q.days + ' ' + dWord, amount: q.stars }]
+      );
+    } catch (e) {
+      logErr('renew/createInvoiceLink', e);
+      return res.status(502).json({ ok: false, error: 'Не удалось создать счёт, попробуй ещё раз' });
+    }
+
+    try {
+      db.logEvent('renewal_created', {
+        orderId: created.id, renewOf: order.id, userId: auth.user.id,
+        stars: q.stars, freeApplied: q.freeUsed, bonusApplied: q.bonusUsed
+      });
+    } catch (e) {
+      logErr('renew/logEvent', e);
+    }
+
+    res.json({
+      ok: true,
+      invoiceLink: invoiceLink,
+      orderId: created.id,
+      renewOf: order.id,
+      stars: q.stars,
+      days: q.days,
+      freeApplied: q.freeUsed,
+      bonusApplied: q.bonusUsed
+    });
+  }));
+
   /* GET /famas/api/key/:token — данные ключа для страницы товара (key.html). */
   app.get('/famas/api/key/:token', function (req, res) {
     const token = String(req.params.token || '');
@@ -884,6 +1059,21 @@ function createServer(botApi) {
     for (const r of regions) serversAvailable += Number(r.available) || 0;
     const partial = serversAvailable < serversPurchased;
 
+    // SPEC-IDEAS §1: продление на странице ключа — canRenew/renewStars/renewDays.
+    let canRenew = false;
+    let renewStars = null;
+    let renewDays = null;
+    if ((order.status === 'paid' || order.status === 'gift') && order.renew_of == null && order.expires_at) {
+      try {
+        const rq = db.renewQuote(order);
+        canRenew = true;
+        renewStars = rq.stars;
+        renewDays = rq.days;
+      } catch (e) {
+        canRenew = false;
+      }
+    }
+
     const sub = subscription.subUrl(order.token);
     const lr = inventory.lastRefresh || null;
     res.json({
@@ -902,7 +1092,10 @@ function createServer(botApi) {
       page: subscription.pageUrl(order.token),
       links: subscription.deepLinks(sub),
       createdAt: order.created_at || null,
-      updatedAt: lr && lr.at ? lr.at : null // время последнего обновления базы (для «обновлено HH:MM»)
+      updatedAt: lr && lr.at ? lr.at : null, // время последнего обновления базы (для «обновлено HH:MM»)
+      canRenew: canRenew,
+      renewStars: renewStars,
+      renewDays: renewDays
     });
   });
 
@@ -1030,6 +1223,13 @@ function createServer(botApi) {
     } catch (e) {
       logErr('admin/summary/adminSummary', e);
     }
+    // SPEC-IDEAS §3: счётчик открытых тикетов поддержки (аддитивно).
+    let openTickets = 0;
+    try {
+      openTickets = db.openTicketsCount();
+    } catch (e) {
+      logErr('admin/summary/openTicketsCount', e);
+    }
 
     res.json({
       ok: true,
@@ -1042,6 +1242,7 @@ function createServer(botApi) {
         regionsCount: base.regionsCount,
         ordersTotal: extra.ordersTotal,
         freeActive: extra.freeActive,
+        openTickets: openTickets,
       },
     });
   });

@@ -538,6 +538,7 @@ body.theming, body.theming * {
 
 /* кнопки */
 .btn {
+  position: relative;
   border-radius: var(--r-sm); border: 1px solid transparent;
   font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .12em;
   text-transform: uppercase; text-align: center; padding: 14px 12px; flex: 1;
@@ -549,6 +550,41 @@ body.theming, body.theming * {
 .btn.ghost { background: transparent; color: var(--muted); border-color: var(--border); }
 .btn.big { padding: 15px 14px; font-size: 11px; border-radius: var(--r-sm); }
 .btn:disabled { opacity: .45; }
+
+/* ── SPEC-IDEAS §1 + §4: продление и самопомощь «ключ не работает» ── */
+/* второй ряд действий ключа: «🔄 Продлить» + «🆘 Не работает»; на узких
+   экранах кнопки переносятся на свою строку — тап-зоны ≥44px не сжимаются */
+.k-actions.k-actions2 { margin-top: 8px; flex-wrap: wrap; }
+.k-actions.k-actions2 .btn { flex: 1 1 auto; min-width: 46%; }
+/* «🔄 Продлить» — денежное действие в «купонном» языке (dashed-акцент,
+   как freebadge/mergebtn); работает в обеих темах и со стеклом */
+.btn.renew { background: var(--card2); color: var(--text); border: 1px dashed var(--accent); }
+/* универсальный спиннер занятости кнопок: .b-lbl прячется, .b-spin крутится */
+.btn .b-spin {
+  display: none; position: absolute; left: 50%; top: 50%; width: 15px; height: 15px;
+  margin: -8px 0 0 -8px; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent;
+  animation: spin .7s linear infinite;
+}
+.btn.busy { pointer-events: none; }
+.btn.busy .b-lbl { visibility: hidden; }
+.btn.busy .b-spin { display: block; }
+/* оверлей самопомощи: выше экрана успеха (300), ниже QR (470);
+   высокий контент скроллится, карточка не вылезает за вьюпорт */
+.ovl.fixovl { z-index: 460; }
+.fixcard { max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.fix-glyph { font-size: 34px; line-height: 1; margin-bottom: 10px; animation: refFloat 3.6s ease-in-out infinite; }
+/* пилюля «живых серверов сейчас: N из M» — свежая живость из /api/me */
+.fix-live {
+  display: inline-block; margin: 0 auto 6px;
+  background: var(--bg2); border: 1px dashed var(--accent); border-radius: 999px;
+  color: var(--text); padding: 9px 14px; letter-spacing: .1em; text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+.fix-live.zero { color: var(--muted); border-color: var(--border); }
+.fix-steps { text-align: left; color: var(--muted); font-size: 12px; line-height: 1.75; margin: 10px 0 14px; }
+.fix-row { display: flex; gap: 8px; }
+.fix-row .btn { min-width: 0; }
 
 .empty { text-align: center; padding: 54px 28px 40px; }
 .empty-mark { font-family: var(--serif); font-size: 28px; color: var(--muted); margin-bottom: 14px; }
@@ -825,6 +861,8 @@ body.theming, body.theming * {
   .ref-linkbox:hover { background-color: var(--card2); }
   .ref-linkbox:hover svg { color: var(--text); }
   .btn.secondary:hover, .btn.ghost:hover { border-color: var(--muted); color: var(--text); }
+  .btn.renew:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .btn.renew:hover:active { transform: scale(.97); }
   .btn.accent:not(:disabled):hover, .paybtn:hover:not(:disabled) { transform: translateY(-1px); }
   .tabbtn:hover { color: var(--text); }
   .seg-btn:hover { color: var(--text); }
@@ -846,6 +884,6 @@ body.theming, body.theming * {
     animation-delay: 0s !important;
   }
   /* спиннеры — индикаторы состояния, оставляем живыми */
-  .pb-spin, .mg-spin { animation-duration: .7s !important; }
-  .bl, .dot, .skel::after, .ref-glyph, .mg-ico, .lb-new, .un-ico { animation: none !important; }
+  .pb-spin, .mg-spin, .b-spin { animation-duration: .7s !important; }
+  .bl, .dot, .skel::after, .ref-glyph, .mg-ico, .lb-new, .un-ico, .fix-glyph { animation: none !important; }
 }

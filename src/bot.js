@@ -127,10 +127,13 @@ const SHOP_SECTIONS = ['black', 'white', 'unstable'];
 
 /** userId -> { map:Map<ISO,qty>, sort:'pop'|'az'|'srv', list:'black'|'white'|'unstable', at:ms } */
 const selections = new Map();
-/** adminId -> { type:'price'|'days'|'extra'|'gift'|'bcast', msgId, at:ms } */
+/** adminId -> { type:'price'|'days'|'extra'|'gift'|'bcast'|'tkreply', msgId, at:ms, ticketId? } */
 const adminPrompts = new Map();
 /** adminId -> { fromChat, msgId, at:ms } — подготовленная рассылка */
 const pendingBroadcasts = new Map();
+/** SPEC-IDEAS §3: userId -> { msgId, at:ms } — FSM «жду сообщение в поддержку» (после cb tknew). */
+const supportPending = new Map();
+const SUPPORT_TTL = 15 * 60 * 1000; // окно ожидания текста тикета
 
 /** Состояние выбора юзера: {map:Map<ISO,qty>, sort, list}. Ленивая подчистка протухшего. */
 function getSelState(userId) {
@@ -592,14 +595,25 @@ function profileView(from) {
       lines.push(`#${o.id} · ${flags} · до ${till} · ${isActive ? '● активен' : '○ истёк'}`);
     }
     if (orders.length > shown.length) lines.push(`… и ещё ${orders.length - shown.length}`);
+    // SPEC-IDEAS §1/§4: легенда к кнопкам ключа (продление и самопомощь).
+    lines.push('', '🔄 — продлить ключ · 🆘 — если не работает');
     // SPEC-MERGE §6: ≥2 активных заказа → предложить объединить всё в один ключ.
     if (canMerge) {
       lines.push('', `🧩 У тебя ${activeOrders.length} активных ключа — можно объединить в один.`);
       kb.text('🧩 Объединить всё в один ключ', 'merge:on').row();
     }
-    for (let i = 0; i < shown.length; i += 2) {
-      kb.text(`Ключ #${shown[i].id}`, `key:${shown[i].id}`);
-      if (shown[i + 1]) kb.text(`Ключ #${shown[i + 1].id}`, `key:${shown[i + 1].id}`);
+    // SPEC-IDEAS §1: у каждого ключа (активного и истёкшего) — кнопка продления «🔄 Xдн · Y⭐»
+    // (cb renew:<id>, цена = повтор заказа) и §4: «🆘» (cb fix:<id>, перевыдача живых серверов).
+    for (const o of shown) {
+      kb.text(`Ключ #${o.id}`, `key:${o.id}`);
+      let rq = null;
+      try {
+        rq = db.renewQuote(o);
+      } catch (e) {
+        rq = null;
+      }
+      if (rq) kb.text(`🔄 ${rq.days}дн · ${rq.stars}⭐`, `renew:${o.id}`);
+      kb.text('🆘', `fix:${o.id}`);
       kb.row();
     }
   } else {
@@ -694,9 +708,16 @@ function supportView() {
     '',
     'Оплата, ключи, настройка приложений —',
     'пиши, решаем быстро и по делу.',
+    '',
+    '✍️ Можно написать прямо здесь, в боте —',
+    'ответ придёт в этот же чат.',
     LINE,
   ].join('\n');
-  const kb = new InlineKeyboard().url('✉︎ Написать', SUPPORT_URL);
+  // SPEC-IDEAS §3: тикет прямо в боте (cb tknew → FSM «жду сообщение») + прямой контакт.
+  const kb = new InlineKeyboard()
+    .text('✍️ Написать в поддержку', 'tknew')
+    .row()
+    .url('✉︎ Написать напрямую', SUPPORT_URL);
   return { text, kb };
 }
 
@@ -733,6 +754,13 @@ function adminPanelView(extraLine, isPrivate) {
   const price = db.priceStars();
   const extra = db.extraStars();
   const days = db.subDays();
+  // SPEC-IDEAS §3: счётчик открытых тикетов поддержки в панели.
+  let openTickets = 0;
+  try {
+    openTickets = db.openTicketsCount();
+  } catch (e) {
+    /* не критично */
+  }
   const lines = [
     `${BRAND} · АДМИН`,
     LINE,
@@ -740,6 +768,7 @@ function adminPanelView(extraLine, isPrivate) {
     `02 / Продаж: <b>${s.ordersPaid}</b> · сегодня: <b>${s.salesToday}</b>`,
     `03 / Выручка: <b>${s.revenueStars}</b> ⭐`,
     `04 / Конфигов: <b>${s.activeConfigs}</b> · регионов: <b>${s.regionsCount}</b>`,
+    `05 / Тикетов открыто: <b>${openTickets}</b>`,
     THIN,
     `Цена: ${price} ⭐ / 1-й серв · доп. сервер: +${extra} ⭐`,
     `Срок: ${daysWord(days)}`,
@@ -903,10 +932,12 @@ async function sendDelivery(api, chatId, order) {
 
   // SPEC-HARDEN ч.1 §4: «🔄 Обновить серверы» заново шлёт актуальную выдачу (ссылка не меняется,
   // но пересобирается число живых серверов). Реюзаем key:<id> — тот же путь, что «Ключ #N» в профиле.
+  // SPEC-IDEAS §4: «🆘 Ключ не работает» — самопомощь: перевыдача живой подписки + инструкция.
   const kb = new InlineKeyboard()
     .url('⬛ СТРАНИЦА КЛЮЧА', page)
     .row()
     .text('🔄 Обновить серверы', `key:${order.id}`)
+    .text('🆘 Ключ не работает', `fix:${order.id}`)
     .row()
     .text('❓ Как подключить', 'help')
     .text('👤 Профиль', 'profile');
@@ -1136,6 +1167,67 @@ async function handleGiftReply(ctx) {
   );
 }
 
+/**
+ * SPEC-IDEAS §3: ответ админа на тикет (ForceReply tkreply:<id>). Шлём текст юзеру,
+ * помечаем тикет answered. Недоставку (юзер закрыл бота) показываем админу честно.
+ */
+async function handleTicketReply(ctx, pend) {
+  const tid = Number(pend && pend.ticketId);
+  const text = (((ctx.message && (ctx.message.text || ctx.message.caption)) || '')).trim();
+  if (!text) {
+    await ctx.reply('✕ Нужен текст ответа. Нажми «✉️ Ответить» на карточке тикета ещё раз.', msgOpts());
+    return;
+  }
+  let ticket = null;
+  try {
+    ticket = db.getTicket(tid);
+  } catch (e) {
+    console.error('[bot] getTicket:', errText(e));
+  }
+  if (!ticket) {
+    await ctx.reply(`✕ Тикет #${tid} не найден.`, msgOpts());
+    return;
+  }
+  const replyText = cut(text, 1500);
+  let delivered = true;
+  try {
+    await ctx.api.sendMessage(
+      ticket.user_id,
+      [
+        `💬 ОТВЕТ ПОДДЕРЖКИ · обращение #${tid}`,
+        THIN,
+        esc(replyText),
+        THIN,
+        'Если вопрос остался — напиши ещё: /support',
+      ].join('\n'),
+      msgOpts()
+    );
+  } catch (e) {
+    delivered = false;
+  }
+  try {
+    db.setTicketReply(tid, replyText, ctx.from.id);
+  } catch (e) {
+    console.error('[bot] setTicketReply:', errText(e));
+  }
+  try {
+    db.logAction({
+      userId: ctx.from.id,
+      username: ctx.from.username || null,
+      isAdmin: true,
+      kind: 'support',
+      action: 'ticket_reply',
+      detail: `#${tid} ${cut(replyText, 80)}`,
+    });
+  } catch (e) { /* журнал не критичен */ }
+  await ctx.reply(
+    delivered
+      ? `✓ Ответ по тикету #${tid} отправлен пользователю.`
+      : `△ Ответ по тикету #${tid} сохранён, но НЕ доставлен (пользователь закрыл бота). Свяжись иначе: <code>${ticket.user_id}</code>`,
+    msgOpts()
+  );
+}
+
 async function handleBroadcastReply(ctx) {
   const adminId = ctx.from.id;
   pendingBroadcasts.set(adminId, {
@@ -1180,17 +1272,125 @@ async function adminReplyRouter(ctx, next) {
     case 'extra': return handleExtraReply(ctx);
     case 'gift': return handleGiftReply(ctx);
     case 'bcast': return handleBroadcastReply(ctx);
+    case 'tkreply': return handleTicketReply(ctx, pend); // SPEC-IDEAS §3
     default: return next();
   }
 }
 
-/** Отправить ForceReply-промпт и запомнить его id за админом. */
-async function askAdmin(ctx, type, text, placeholder) {
+/** Отправить ForceReply-промпт и запомнить его id за админом. extra — доп. поля (напр. ticketId). */
+async function askAdmin(ctx, type, text, placeholder, extra) {
   const sent = await ctx.reply(text, {
     parse_mode: 'HTML',
     reply_markup: { force_reply: true, input_field_placeholder: cut(placeholder, 60) },
   });
-  adminPrompts.set(ctx.from.id, { type, msgId: sent.message_id, at: Date.now() });
+  adminPrompts.set(
+    ctx.from.id,
+    Object.assign({ type, msgId: sent.message_id, at: Date.now() }, extra || {})
+  );
+}
+
+/* ── SPEC-IDEAS §3: тикеты поддержки (FSM юзера) ───────────────── */
+
+/**
+ * Создать тикет из текста юзера: антиспам (≤5 открытых на юзера), запись в БД, подтверждение
+ * юзеру и карточка с кнопкой «✉️ Ответить» всем админам (ошибки отправки глотаются).
+ */
+async function createTicketFlow(ctx, rawText) {
+  const from = ctx.from;
+  let openCount = 0;
+  try {
+    openCount = db.openTicketsCount(from.id);
+  } catch (e) {
+    console.error('[bot] openTicketsCount:', errText(e));
+  }
+  if (openCount >= 5) {
+    await ctx.reply(
+      [
+        BRAND,
+        THIN,
+        `✕ У тебя уже ${openCount} открытых обращений.`,
+        'Дождись ответа поддержки — мы всё видим.',
+      ].join('\n'),
+      msgOpts()
+    );
+    return;
+  }
+  const clean = cut(String(rawText || '').trim(), 1500);
+  let ticket;
+  try {
+    ticket = db.createTicket({ userId: from.id, username: from.username || null, message: clean });
+  } catch (e) {
+    console.error('[bot] createTicket:', errText(e));
+    await ctx.reply(
+      `✕ Не получилось отправить обращение. Напиши напрямую: @${config.SUPPORT_USERNAME}`,
+      msgOpts()
+    );
+    return;
+  }
+  try {
+    db.logAction({
+      userId: from.id,
+      username: from.username || null,
+      isAdmin: isAdmin(from.id),
+      kind: 'support',
+      action: 'ticket_new',
+      detail: `#${ticket.id} ${cut(clean, 80)}`,
+    });
+  } catch (e) { /* журнал не критичен */ }
+
+  await ctx.reply(
+    [
+      BRAND,
+      THIN,
+      `✓ Обращение #${ticket.id} отправлено в поддержку.`,
+      'Ответ придёт прямо в этот чат — обычно быстро.',
+    ].join('\n'),
+    msgOpts()
+  );
+
+  // карточка тикета всем админам (SPEC-IDEAS §3): кнопка «✉️ Ответить» → cb tkreply:<id>
+  const card = [
+    `🎫 ТИКЕТ #${ticket.id}`,
+    LINE,
+    `От: ${userLabel(from)} (<code>${from.id}</code>)`,
+    '',
+    esc(clean),
+  ].join('\n');
+  const kb = new InlineKeyboard().text('✉️ Ответить', `tkreply:${ticket.id}`);
+  for (const adminId of config.ADMIN_IDS) {
+    try {
+      await ctx.api.sendMessage(adminId, card, msgOpts(kb));
+    } catch (e) {
+      /* админ мог не открыть бота — глотаем */
+    }
+  }
+}
+
+/**
+ * Роутер FSM поддержки: если юзер в состоянии «жду сообщение» (после cb tknew) — следующий его
+ * ТЕКСТ становится тикетом. Команды (/…) отменяют ожидание и идут своим путём; не-текст (стикер
+ * и т.п.) пропускаем дальше. TTL SUPPORT_TTL. Регистрируется ПОСЛЕ adminReplyRouter, ДО catch-all.
+ */
+async function supportReplyRouter(ctx, next) {
+  const uid = ctx.from && ctx.from.id;
+  if (!uid) return next();
+  const pend = supportPending.get(uid);
+  if (!pend) return next();
+  if (Date.now() - pend.at > SUPPORT_TTL) {
+    supportPending.delete(uid);
+    return next();
+  }
+  const msg = ctx.message;
+  if (!msg) return next();
+  const text = typeof msg.text === 'string' ? msg.text : typeof msg.caption === 'string' ? msg.caption : '';
+  if (!text.trim()) return next();
+  if (text.trim().startsWith('/')) {
+    // юзер переключился на команду — ожидание снимаем, команда обрабатывается как обычно
+    supportPending.delete(uid);
+    return next();
+  }
+  supportPending.delete(uid);
+  return createTicketFlow(ctx, text);
 }
 
 /* ── регистрация меню команд (не критично, ошибки глотаем) ────── */
@@ -1301,6 +1501,18 @@ function createBot() {
       }
     } catch (e) {
       // SPEC-V3 §A.3: логирование НИКОГДА не влияет на обработку апдейта
+    }
+    return next();
+  });
+
+  /* — SPEC-IDEAS §3: любая команда снимает FSM «жду сообщение в поддержку» — иначе
+   * следующий обычный текст юзера неожиданно стал бы тикетом. Не влияет на обработку. — */
+  bot.use(async (ctx, next) => {
+    try {
+      const t = ctx.message && typeof ctx.message.text === 'string' ? ctx.message.text.trim() : '';
+      if (t.startsWith('/') && ctx.from) supportPending.delete(ctx.from.id);
+    } catch (e) {
+      /* не критично */
     }
     return next();
   });
@@ -1639,6 +1851,85 @@ function createBot() {
       order = db.markOrderPaid(id, sp.telegram_payment_charge_id) || db.getOrder(id);
     }
     selections.delete(ctx.from.id); // корзина сыграла — чистим
+
+    // ── SPEC-IDEAS §1: оплата ПРОДЛЕНИЯ (order.renew_of) — НЕ выдаём новый ключ. ──
+    // Продлеваем оригинал строго ОДИН раз (гейт wasPending: переход pending→paid; дубль-апдейт
+    // Telegram не продлит второй раз), юзеру — «продлён до DD.MM», ссылка прежняя.
+    if (order.renew_of != null) {
+      const origId = Number(order.renew_of);
+      let orig = null;
+      if (wasPending) {
+        try {
+          orig = db.applyRenewal(origId, db.subDays());
+        } catch (e) {
+          console.error('[bot] applyRenewal:', errText(e));
+        }
+      }
+      if (!orig) {
+        try { orig = db.getOrder(origId); } catch (e) { orig = null; }
+      }
+      const till = orig && orig.expires_at ? fmtDate(orig.expires_at) : null;
+      const kb = new InlineKeyboard();
+      if (orig) kb.text(`Ключ #${origId}`, `key:${origId}`).row();
+      kb.text('👤 Профиль', 'profile');
+      await ctx
+        .reply(
+          [
+            BRAND,
+            LINE,
+            '✓ ПРОДЛЕНИЕ ОПЛАЧЕНО',
+            orig && till
+              ? `Ключ #${origId} продлён до ${till}.`
+              : `Оплата получена, но ключ #${origId} не нашёлся — напиши в поддержку, решим сразу: @${config.SUPPORT_USERNAME}`,
+            'Ссылка прежняя — менять ничего не нужно.',
+          ].join('\n'),
+          msgOpts(kb)
+        )
+        .catch(() => {});
+      if (wasPending) {
+        try {
+          db.logEvent('renewal', { orderId: id, renewOf: origId, userId: ctx.from.id, stars: sp.total_amount });
+        } catch (e) { /* ок */ }
+        await notifyAdmins(
+          ctx.api,
+          `🔄 Продление ключа #${origId} (заказ #${id}) · ${userLabel(ctx.from)} · ${sp.total_amount} ⭐${till ? ` · до ${till}` : ''}`
+        );
+        if (!orig) {
+          await notifyAdmins(
+            ctx.api,
+            `△ Продление #${id}: исходный заказ #${origId} не найден — оплату ${sp.total_amount} ⭐ надо разобрать руками.`
+          );
+        }
+        // SPEC-LOG §5: продление — реальная продажа, логируем в канал (fire-and-forget).
+        saleslog.logSale(ctx.api, order, 'paid').catch((e) => console.error('[bot] saleslog renew:', errText(e)));
+        // SPEC-GROWTH2 §A.4: платное продление — тоже платная покупка для реф-бонуса (идемпотентно).
+        try {
+          if (Number(sp.total_amount) > 0 && sp.telegram_payment_charge_id !== 'FREE') {
+            const cr = db.creditReferralOnPurchase(order.user_id);
+            if (cr && cr.credited && cr.inviter) {
+              try {
+                const info = db.refInfo(cr.inviter);
+                await ctx.api.sendMessage(
+                  cr.inviter,
+                  [
+                    '🎉 Твой друг совершил покупку!',
+                    `+${config.REF_BONUS_STARS} ⭐ бонуса.`,
+                    `Приглашено (купили): ${info.count} · бонус: ${info.bonus} ⭐`,
+                  ].join('\n'),
+                  msgOpts()
+                );
+              } catch (e) {
+                /* пригласивший недоступен — глотаем */
+              }
+            }
+          }
+        } catch (e) {
+          console.error('[bot] creditReferralOnPurchase (renew):', errText(e));
+        }
+      }
+      return;
+    }
+
     // ключ доставляем всегда (повторная доставка безвредна — юзер точно получит),
     // но журнал продажи и уведомление админов — только на реальном переходе
     // pending→paid: защита от повторной доставки одного апдейта Telegram
@@ -1692,6 +1983,10 @@ function createBot() {
   /* ── ответы админа на ForceReply-промпты ── */
 
   bot.on('message', adminReplyRouter);
+
+  /* ── SPEC-IDEAS §3: текст юзера в режиме «жду сообщение в поддержку» → тикет ── */
+
+  bot.on('message', supportReplyRouter);
 
   /* ── колбэки: навигация ── */
 
@@ -2024,6 +2319,260 @@ function createBot() {
         .catch(() => {});
     }
   });
+
+  /* ── SPEC-IDEAS §1: продление ключа (cb renew:<orderId>) ── */
+
+  bot.callbackQuery(/^renew:(\d+)$/, async (ctx) => {
+    const orderId = Number(ctx.match[1]);
+    let order = null;
+    try {
+      order = db.getOrder(orderId);
+    } catch (e) {
+      console.error('[bot] renew getOrder:', errText(e));
+    }
+    // продлить можно только СВОЙ выданный ключ (paid|gift); renewal-«чек» продлить нельзя
+    if (
+      !order ||
+      Number(order.user_id) !== ctx.from.id ||
+      (order.status !== 'paid' && order.status !== 'gift') ||
+      order.renew_of != null ||
+      !order.expires_at
+    ) {
+      await ctx.answerCallbackQuery({ text: 'Этот ключ нельзя продлить.', show_alert: true }).catch(() => {});
+      return;
+    }
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    // АТОМАРНО (§1 + SPEC-FREE §7b): free/bonus списываются прямо сейчас, как в обычной покупке.
+    let q;
+    try {
+      q = db.reserveRenewal(ctx.from.id, order);
+    } catch (e) {
+      await ctx.reply(
+        `✕ ${esc((e && e.message) || 'Не удалось посчитать продление')}\nОткрой /profile и попробуй снова.`,
+        msgOpts()
+      );
+      return;
+    }
+
+    const flags = flagsOf(parseRegions(order)) || '—';
+
+    // полностью покрыто free/бонусом: продлеваем сразу, БЕЗ инвойса (XTR на 0 нельзя)
+    if (q.fullyFree) {
+      const created = db.createOrder({
+        userId: ctx.from.id,
+        regions: order.regions, // копия оригинала (JSON-строка)
+        qty: order.qty,
+        stars: 0,
+        status: 'paid',
+        days: q.days,
+        freeApplied: q.freeUsed,
+        bonusApplied: q.bonusUsed,
+        chargeId: 'FREE',
+        listType: order.list_type,
+        renewOf: order.id,
+      });
+      let orig = null;
+      try {
+        orig = db.applyRenewal(order.id, q.days);
+      } catch (e) {
+        console.error('[bot] applyRenewal (free):', errText(e));
+      }
+      const till = orig && orig.expires_at ? fmtDate(orig.expires_at) : '—';
+      try {
+        db.logEvent('renewal', {
+          orderId: created.id,
+          renewOf: order.id,
+          userId: ctx.from.id,
+          stars: 0,
+          free: true,
+          freeApplied: q.freeUsed,
+          bonusApplied: q.bonusUsed,
+        });
+      } catch (e) { /* ок */ }
+      const kb = new InlineKeyboard().text(`Ключ #${order.id}`, `key:${order.id}`).row().text('👤 Профиль', 'profile');
+      await ctx.reply(
+        [
+          BRAND,
+          LINE,
+          '✓ КЛЮЧ ПРОДЛЁН БЕСПЛАТНО',
+          `Ключ #${order.id} · ${flags} — до ${till}.`,
+          q.bonusUsed > 0 ? `Списано бонусом: ${q.bonusUsed} ⭐` : '',
+          'Ссылка прежняя — менять ничего не нужно.',
+        ].filter(Boolean).join('\n'),
+        msgOpts(kb)
+      );
+      await notifyAdmins(
+        ctx.api,
+        `🔄 Продление #${order.id} · ${userLabel(ctx.from)} · бесплатно (free ${q.freeUsed} / бонус ${q.bonusUsed}⭐) · до ${till}`
+      );
+      // SPEC-LOG §5: транзакция реальная (0⭐, по бонусам/free) — логируем как free.
+      try {
+        const full = db.getOrder(created.id);
+        saleslog.logSale(ctx.api, full, 'free').catch(() => {});
+      } catch (e) { /* ок */ }
+      return;
+    }
+
+    // обычное (в т.ч. частично скидочное) продление: pending renewal-заказ + инвойс
+    const created = db.createOrder({
+      userId: ctx.from.id,
+      regions: order.regions,
+      qty: order.qty,
+      stars: q.stars,
+      status: 'pending',
+      days: q.days,
+      freeApplied: q.freeUsed,
+      bonusApplied: q.bonusUsed,
+      listType: order.list_type,
+      renewOf: order.id,
+    });
+    let descr = `Продление ключа #${order.id} · ${flags} · +${daysWord(q.days)}`;
+    if (q.freeUsed > 0) descr += ` · −${q.freeUsed} бесплатно`;
+    if (q.bonusUsed > 0) descr += ` · −${q.bonusUsed}⭐ бонус`;
+    await sendStarsInvoice(
+      ctx,
+      cut(descr, 250),
+      `order:${created.id}`,
+      `Продление · ${daysWord(q.days)}`,
+      q.stars
+    );
+  });
+
+  /* ── SPEC-IDEAS §4: «🆘 Ключ не работает» — самопомощь (cb fix:<orderId>) ── */
+
+  bot.callbackQuery(/^fix:(\d+)$/, async (ctx) => {
+    const orderId = Number(ctx.match[1]);
+    let order = null;
+    try {
+      order = db.getOrder(orderId);
+    } catch (e) {
+      console.error('[bot] fix getOrder:', errText(e));
+    }
+    if (
+      !order ||
+      Number(order.user_id) !== ctx.from.id ||
+      (order.status !== 'paid' && order.status !== 'gift')
+    ) {
+      await ctx.answerCallbackQuery({ text: 'Ключ не найден.', show_alert: true }).catch(() => {});
+      return;
+    }
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    const expired = order.expires_at ? now() > order.expires_at : false;
+    // перевыдача = та же ссылка, но контент живой: buildSub собирает СВЕЖИЕ живые серверы
+    // (+резерв SUB_RESERVE_PER_REGION). Считаем, сколько реально попадёт в подписку сейчас.
+    let live = 0;
+    try {
+      live = db.liveRowsForOrder(order, { reserve: config.SUB_RESERVE_PER_REGION }).length;
+    } catch (e) {
+      live = 0; // 0 живых — не крашимся, показываем «обновляются»
+    }
+    const link = subscription.subUrl(order.token);
+    const page = subscription.pageUrl(order.token);
+
+    const kb = new InlineKeyboard().url('⬛ СТРАНИЦА КЛЮЧА', page).row();
+    if (expired) {
+      let renewLabel = '🔄 Продлить';
+      try {
+        const rq = db.renewQuote(order);
+        renewLabel = `🔄 Продлить (${rq.days}дн · ${rq.stars}⭐)`;
+      } catch (e) { /* без цены */ }
+      kb.text(renewLabel, `renew:${order.id}`).row();
+    } else {
+      kb.text('🔄 Обновить серверы', `key:${order.id}`).row();
+    }
+    kb.text('✍️ Поддержка', 'tknew');
+
+    const statusLine = expired
+      ? `○ Ключ истёк ${order.expires_at ? fmtDate(order.expires_at) : ''} — в этом и причина. Продли, и он оживёт.`
+      : live > 0
+        ? `Живых серверов в подписке сейчас: ${live}.`
+        : '△ Живые серверы временно обновляются — попробуй через пару минут.';
+
+    await ctx.reply(
+      [
+        `${BRAND} · ПОМОЩЬ С КЛЮЧОМ`,
+        LINE,
+        `КЛЮЧ #${order.id} — ЧИНИМ`,
+        statusLine,
+        '',
+        'СВЕЖАЯ ССЫЛКА (та же, контент обновлён):',
+        `<code>${esc(link)}</code>`,
+        '(нажми — скопируется)',
+        '',
+        'ЧТО СДЕЛАТЬ:',
+        '01 / удали старую подписку в приложении',
+        'и вставь эту ссылку заново',
+        '02 / в приложении выбери другой сервер',
+        'из списка (их там несколько)',
+        '03 / не помогло — «Обновить серверы»',
+        'или напиши в поддержку, разберёмся.',
+      ].join('\n'),
+      msgOpts(kb)
+    );
+  });
+
+  /* ── SPEC-IDEAS §3: тикеты — кнопка «✍️ Написать в поддержку» (cb tknew) ── */
+
+  bot.callbackQuery('tknew', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    if (!isPrivateCtx(ctx)) {
+      await ctx.reply(`Напиши боту в личку: ${BOT_URL}`, msgOpts()).catch(() => {});
+      return;
+    }
+    let sent;
+    try {
+      sent = await ctx.reply(
+        [
+          `${BRAND} · ПОДДЕРЖКА`,
+          THIN,
+          'Опиши проблему ОДНИМ сообщением (текстом):',
+          'что покупал, что не работает, какое приложение.',
+          'Отправь его следующим сообщением — я передам команде.',
+        ].join('\n'),
+        {
+          parse_mode: 'HTML',
+          reply_markup: { force_reply: true, input_field_placeholder: 'Опиши проблему…' },
+        }
+      );
+    } catch (e) {
+      console.error('[bot] tknew prompt:', errText(e));
+      return;
+    }
+    supportPending.set(ctx.from.id, { msgId: sent.message_id, at: Date.now() });
+  });
+
+  /* ── SPEC-IDEAS §3: ответ админа на тикет (cb tkreply:<id> → ForceReply) ── */
+
+  bot.callbackQuery(/^tkreply:(\d+)$/, guardAdmin(async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const tid = Number(ctx.match[1]);
+    let ticket = null;
+    try {
+      ticket = db.getTicket(tid);
+    } catch (e) {
+      console.error('[bot] tkreply getTicket:', errText(e));
+    }
+    if (!ticket) {
+      await ctx.reply(`✕ Тикет #${tid} не найден.`, msgOpts());
+      return;
+    }
+    const who = ticket.username ? '@' + esc(ticket.username) : `<code>${ticket.user_id}</code>`;
+    await askAdmin(
+      ctx,
+      'tkreply',
+      [
+        `⁂ ОТВЕТ НА ТИКЕТ #${tid}`,
+        `От: ${who}${ticket.status === 'answered' ? ' · уже отвечали' : ''}`,
+        `«${esc(cut(ticket.message || '', 200))}»`,
+        '',
+        'Ответь на это сообщение текстом — я перешлю пользователю.',
+      ].join('\n'),
+      'Текст ответа…',
+      { ticketId: tid }
+    );
+  }));
 
   /* ── колбэки: админ-панель ── */
 

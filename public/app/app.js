@@ -69,7 +69,11 @@
     canMerge: false,    // есть ≥2 активных заказа — можно объединить (поле canMerge)
     mergedKey: null,    // единый ключ {token,page,sub,servers,expiresMax,regions[{iso,nameRu,flag,qty,expiresAt}]}
     mergeBusy: false,   // идёт POST /api/merge
-    qrOpen: false       // открыт QR-оверлей объединённого ключа
+    qrOpen: false,      // открыт QR-оверлей объединённого ключа
+    /* SPEC-IDEAS §1 + §4: продление подписки и самопомощь «ключ не работает» */
+    renewBusy: false,   // идёт POST /api/renew — одно продление за раз (деньги!)
+    fixOpen: false,     // открыт оверлей «🆘 не работает»
+    fix: null           // контекст оверлея самопомощи: {id, merged, page}
   };
   /* SPEC-GROWTH2 §B + SPEC-V3 §B: выбор регионов хранится ОТДЕЛЬНО для каждого
      каталога — переключение black/white/unstable не смешивает корзины. Инвариант:
@@ -100,6 +104,7 @@
   var elOvl = $('ovl');
   var elQrOvl = $('qrOvl');   /* SPEC-MERGE: QR объединённого ключа */
   var elQrImg = $('qrImg');
+  var elFixOvl = $('fixOvl'); /* SPEC-IDEAS §4: оверлей «🆘 ключ не работает» */
   var elSheet = $('sheet');
   var elSheetBack = $('sheetBack');
   var elSeg = $('segTheme');
@@ -341,13 +346,14 @@
 
   /* ── кнопка «назад» Telegram + Escape: закрывают верхний слой ── */
   function updateBackBtn() {
-    var need = S.sheetOpen || S.ovlOpen || S.qrOpen;
+    var need = S.sheetOpen || S.ovlOpen || S.qrOpen || S.fixOpen;
     try {
       if (tg && tg.BackButton) { if (need) tg.BackButton.show(); else tg.BackButton.hide(); }
     } catch (e) { /* noop */ }
   }
   function closeTopLayer() {
     if (S.qrOpen) { closeQr(); return true; } /* SPEC-MERGE: QR — самый верхний слой */
+    if (S.fixOpen) { closeFix(); return true; } /* SPEC-IDEAS §4: самопомощь */
     if (S.sheetOpen) { closeSheet(); return true; }
     if (S.ovlOpen) { hideSuccess(); return true; }
     return false;
@@ -1268,7 +1274,32 @@
           '<button type="button" class="btn secondary" data-act="qr"><svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.6"/><rect x="14" y="3.5" width="6.5" height="6.5" rx="1.6"/><rect x="3.5" y="14" width="6.5" height="6.5" rx="1.6"/><path d="M14 14h2.6v2.6H14zM20.5 14v2.7M14 20.5h2.7M18.3 18.3l2.2 2.2"/></svg>QR-КОД</button>' +
           '<button type="button" class="btn ghost" data-act="unmerge">РАЗЪЕДИНИТЬ</button>' +
         '</div>' +
+        /* SPEC-IDEAS §4: самопомощь и для объединённого ключа; §1: продление у
+           merged мягко скрыто — продлеваются отдельные заказы (разъединить → продлить) */
+        (act ? '<div class="k-actions k-actions2">' +
+          '<button type="button" class="btn ghost" data-act="fix">🆘 НЕ РАБОТАЕТ</button>' +
+        '</div>' : '') +
       '</article>';
+  }
+
+  /* ── SPEC-IDEAS §1 + §4: второй ряд действий ключа ─────────────
+     «🔄 Продлить» — ТОЛЬКО если API уже отдаёт canRenew (мягкая деградация:
+     поля нет — кнопки нет); цена/срок из renewStars/renewDays (/api/me).
+     «🆘 Не работает» — самопомощь для активных ключей. */
+  function renewLabel(o) {
+    var d = Math.max(0, Math.floor(Number(o.renewDays) || 0));
+    var s = Math.max(0, Math.floor(Number(o.renewStars) || 0));
+    return '🔄 ПРОДЛИТЬ' + (d > 0 ? ' +' + d + ' ДН' : '') + (s > 0 ? ' · ' + fmtNum(s) + ' ⭐' : '');
+  }
+  function keyActions2Html(o) {
+    var h = '';
+    if (o && o.canRenew === true) {
+      h += '<button type="button" class="btn renew" data-act="renew">' +
+        '<span class="b-lbl">' + esc(renewLabel(o)) + '</span>' +
+        '<span class="b-spin" aria-hidden="true"></span></button>';
+    }
+    if (o && o.active) h += '<button type="button" class="btn ghost" data-act="fix">🆘 НЕ РАБОТАЕТ</button>';
+    return h ? '<div class="k-actions k-actions2">' + h + '</div>' : '';
   }
 
   /* анимация «списка → один ключ»: карточки слетаются к верху и тают, затем
@@ -1362,6 +1393,177 @@
     updateBackBtn();
   }
 
+  /* ── SPEC-IDEAS §1: продление подписки ─────────────────────────
+     POST /famas/api/renew {initData, orderId}. Ответ: {free:true} — продлён
+     сразу (free/бонус покрыли цену), показать новый срок; {invoiceLink} —
+     открыть счёт, после оплаты перечитать /api/me (срок вырос). Деньги
+     критичны: одна операция за раз, итог всегда считает СЕРВЕР. */
+  function doRenew(orderId, btn) {
+    if (S.renewBusy) return;
+    if (!tg || !initData) { showErr('открой мини-апп внутри Telegram, чтобы продлить'); return; }
+    var id = Math.floor(Number(orderId) || 0);
+    if (id <= 0) { showErr('не удалось определить заказ — обнови список'); return; }
+    S.renewBusy = true;
+    if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+    haptic('medium');
+    function release() {
+      S.renewBusy = false;
+      /* узел мог быть уже перерисован loadKeys — тогда просто отпустит копию */
+      if (btn) { btn.disabled = false; btn.classList.remove('busy'); }
+    }
+    /* перечитка ключей: сразу + тихий догон чуть позже (сервер мог дописывать оплату) */
+    function refreshKeysSoon() {
+      S.orders = null;
+      if (S.tab === 'keys') loadKeys();
+      setTimeout(function () {
+        if (!initData) return;
+        fetchMe().then(function (orders) {
+          S.orders = orders;
+          if (S.tab === 'keys') renderKeys();
+        }).catch(function () { /* noop: не критично */ });
+      }, 2600);
+    }
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var t = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) { /* noop */ } }, 15000) : null;
+    fetch(API + '/renew', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: initData, orderId: id }),
+      signal: ctl ? ctl.signal : undefined
+    })
+      .then(function (r) {
+        if (t) clearTimeout(t);
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          /* валидны два ответа: {invoiceLink,...} либо {free:true,...} (продлён без счёта) */
+          if (!r.ok || !d.ok || (!d.invoiceLink && d.free !== true)) throw new Error((d && d.error) || ('HTTP ' + r.status));
+          return d;
+        });
+      })
+      .then(function (d) {
+        release();
+        if (d.free === true) {
+          /* free/бонус покрыли продление — счёт не создаётся, срок уже вырос */
+          hapticNotify('success');
+          var until = d.newExpiresAt || d.expiresAt || d.until || 0;
+          toast(until ? 'ключ продлён до ' + fmtDate(until) : 'ключ продлён');
+          refreshKeysSoon();
+          refreshBalances();
+          return;
+        }
+        if (typeof tg.openInvoice === 'function') {
+          tg.openInvoice(d.invoiceLink, function (status) {
+            if (status === 'paid') {
+              hapticNotify('success');
+              toast('оплачено — ключ продлён');
+              refreshKeysSoon(); /* срок вырос — перечитать /api/me */
+              refreshBalances();
+            } else if (status === 'cancelled') {
+              toast('продление отменено');
+              refreshBalances(); /* §7b: скидки резервируются при создании — балансы освежить */
+            } else if (status === 'failed') {
+              hapticNotify('error');
+              showErr('оплата не прошла — попробуй ещё раз');
+              refreshBalances();
+            } else {
+              toast('платёж обрабатывается…');
+              refreshKeysSoon();
+              refreshBalances();
+            }
+          });
+        } else {
+          openTgLink(d.invoiceLink);
+          toast('счёт открыт в Telegram');
+        }
+      })
+      .catch(function (e) {
+        if (t) clearTimeout(t);
+        release();
+        var msg = '';
+        if (e && e.message && e.name !== 'AbortError' && e.name !== 'TypeError' &&
+            !/^HTTP \d+$/.test(e.message) && !/^bad payload$/.test(e.message)) {
+          msg = e.message;
+        }
+        showErr(msg || 'не удалось оформить продление — попробуй ещё раз');
+      });
+  }
+
+  /* ── SPEC-IDEAS §4: «🆘 ключ не работает» — самопомощь ─────────
+     Оверлей: заверение (серверы живые, в подписке есть резерв), шаги 01-03
+     и «🔄 ОБНОВИТЬ ДАННЫЕ» (перечитать /api/me — свежие живые серверы).
+     Фолбэк без оверлея (кэш старого index.html) — открыть страницу ключа,
+     там та же самопомощь. */
+  function openFix(card) {
+    var page = (card && card.getAttribute('data-page')) || '';
+    if (!elFixOvl) { openExternal(page); return; }
+    S.fixOpen = true;
+    S.fix = {
+      id: Math.floor(Number(card && card.getAttribute('data-id')) || 0),
+      merged: !!(card && card.classList.contains('merged')),
+      page: page
+    };
+    fillFixLive();
+    elFixOvl.hidden = false;
+    requestAnimationFrame(function () { elFixOvl.classList.add('in'); });
+    haptic('light');
+    updateBackBtn();
+  }
+  function closeFix() {
+    if (!elFixOvl) { S.fixOpen = false; return; }
+    S.fixOpen = false;
+    elFixOvl.classList.remove('in');
+    setTimeout(function () { elFixOvl.hidden = true; }, 260);
+    updateBackBtn();
+  }
+  /* строка «живых серверов сейчас: N из M» — из кэша /api/me;
+     мягкая деградация: полей нет — строки нет (XSS-safe: textContent) */
+  function fillFixLive() {
+    var el = $('fixLive');
+    if (!el) return;
+    var live = NaN, total = NaN;
+    if (S.fix && S.fix.merged && S.mergedKey) {
+      live = Number(S.mergedKey.serversAvailable);
+      total = Number(S.mergedKey.servers);
+    } else if (S.fix && S.fix.id && S.orders) {
+      for (var i = 0; i < S.orders.length; i++) {
+        if (Number(S.orders[i].id) === S.fix.id) {
+          live = Number(S.orders[i].serversAvailable);
+          total = Number(S.orders[i].servers);
+          break;
+        }
+      }
+    }
+    if (isFinite(live) && live >= 0) {
+      el.textContent = (live > 0 ? '● ' : '○ ') + 'живых серверов сейчас: ' + live +
+        (isFinite(total) && total > 0 ? ' из ' + total : '');
+      el.classList.toggle('zero', live === 0);
+      el.hidden = false;
+    } else {
+      el.hidden = true;
+    }
+  }
+  /* «🔄 ОБНОВИТЬ ДАННЫЕ»: перезапросить /api/me — данные и живость свежие */
+  var fixBusy = false;
+  function fixRefresh(btn) {
+    if (fixBusy) return;
+    if (!initData) { showErr('открой мини-апп внутри Telegram'); return; }
+    fixBusy = true;
+    if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+    haptic('light');
+    fetchMe()
+      .then(function (orders) {
+        S.orders = orders;
+        if (S.tab === 'keys') renderKeys();
+        fillFixLive();
+        hapticNotify('success');
+        toast('обновлено — серверы актуальны');
+      })
+      .catch(function () { showErr('не удалось обновить — попробуй ещё раз'); })
+      .then(function () {
+        fixBusy = false;
+        if (btn) { btn.disabled = false; btn.classList.remove('busy'); }
+      });
+  }
+
   function renderKeys() {
     /* SPEC-MERGE: режим объединения — показываем ОДИН единый ключ, индивидуальные скрыты */
     if (S.merged && S.mergedKey) {
@@ -1385,7 +1587,7 @@
       var meta = n + ' ' + plural(n, 'сервер', 'сервера', 'серверов') + ' · до ' + fmtDate(o.expiresAt) +
         (o.status === 'gift' ? ' · подарок' : '');
       html +=
-        '<article class="keycard gl" style="animation-delay:' + Math.min(i * 40, 400) + 'ms" data-page="' + esc(o.page || '') + '" data-sub="' + esc(o.sub || '') + '">' +
+        '<article class="keycard gl" style="animation-delay:' + Math.min(i * 40, 400) + 'ms" data-id="' + esc(o.id) + '" data-page="' + esc(o.page || '') + '" data-sub="' + esc(o.sub || '') + '">' +
           '<div class="k-top"><span class="k-id">#' + esc(o.id) + '</span>' +
             (o.active ? '<span class="k-status">● АКТИВЕН</span>' : '<span class="k-status off">○ ИСТЁК</span>') +
           '</div>' +
@@ -1396,6 +1598,7 @@
             '<button type="button" class="btn accent" data-act="open">ОТКРЫТЬ</button>' +
             '<button type="button" class="btn secondary" data-act="copy">КОПИРОВАТЬ ССЫЛКУ</button>' +
           '</div>' +
+          keyActions2Html(o) + /* SPEC-IDEAS §1/§4: «🔄 Продлить» + «🆘 Не работает» */
         '</article>';
     }
     elKeys.innerHTML = html;
@@ -1562,6 +1765,8 @@
       }
       if (kind === 'qr') openQr(card.getAttribute('data-token'), card.getAttribute('data-page'));
       if (kind === 'unmerge') doMerge(false, act);
+      if (kind === 'renew') doRenew(card.getAttribute('data-id'), act); /* SPEC-IDEAS §1 */
+      if (kind === 'fix') openFix(card);                                /* SPEC-IDEAS §4 */
     });
     $('btnReloadKeys').addEventListener('click', function () {
       var b = this;
@@ -1594,6 +1799,26 @@
     if (elQrImg) {
       elQrImg.addEventListener('error', function () {
         if (S.qrOpen) showErr('не удалось загрузить QR-код — попробуй ещё раз');
+      });
+    }
+
+    /* SPEC-IDEAS §4: оверлей «🆘 ключ не работает» (null-гарды — кэш старого index.html) */
+    var btnFixClose = $('btnFixClose');
+    if (btnFixClose) btnFixClose.addEventListener('click', closeFix);
+    var btnFixRefresh = $('btnFixRefresh');
+    if (btnFixRefresh) btnFixRefresh.addEventListener('click', function () { fixRefresh(this); });
+    var btnFixPage = $('btnFixPage');
+    if (btnFixPage) {
+      btnFixPage.addEventListener('click', function () {
+        if (S.fix && S.fix.page) openExternal(S.fix.page);
+        else showErr('ссылка недоступна');
+      });
+    }
+    var btnFixSupport = $('btnFixSupport');
+    if (btnFixSupport) btnFixSupport.addEventListener('click', function () { openTgLink(SUPPORT_URL); });
+    if (elFixOvl) {
+      elFixOvl.addEventListener('click', function (ev) {
+        if (ev.target === elFixOvl) closeFix(); /* тап по фону закрывает */
       });
     }
 

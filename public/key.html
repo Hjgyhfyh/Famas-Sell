@@ -200,6 +200,9 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 .ticket > :nth-child(17) { animation-delay: .56s; }
 .ticket > :nth-child(18) { animation-delay: .59s; }
 .ticket > :nth-child(19) { animation-delay: .62s; }
+/* SPEC-IDEAS §1/§4: квитанция подросла до 21 ребёнка (продление + самопомощь) */
+.ticket > :nth-child(20) { animation-delay: .65s; }
+.ticket > :nth-child(21) { animation-delay: .68s; }
 /* водяной знак бумаги */
 .ticket::before {
   content: '⁂'; position: absolute; z-index: -1; left: 50%; top: 50%;
@@ -283,6 +286,21 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   padding: 15px 26px; border-radius: 999px; transition: transform .15s ease;
 }
 .buybtn:active { transform: scale(.96); }
+/* ── SPEC-IDEAS §1: «🔄 ПРОДЛИТЬ» — денежная пилюля в «купонном» языке
+   (dashed-рамка), видна только когда API отдаёт canRenew; тап-зона ≥44px ── */
+.rnwbtn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px;
+  background: transparent; color: var(--tk-text); text-decoration: none;
+  border: 1.5px dashed var(--tk-text); border-radius: 999px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+  padding: 13px 24px; transition: transform .15s ease, opacity .15s ease;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.rnwbtn:active { transform: scale(.96); }
+.renew-note {
+  text-align: center; font-family: var(--mono); font-size: 8.5px; letter-spacing: .14em;
+  color: var(--tk-dim); text-transform: uppercase; margin-top: 7px; line-height: 1.8;
+}
 .dead .t-qr, .dead .t-link, .dead .t-apps { opacity: .3; pointer-events: none; user-select: none; -webkit-user-select: none; }
 
 /* ── заголовки секций ── */
@@ -452,6 +470,14 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 .hs { display: flex; gap: 10px; margin: 8px 0; }
 .hs b { font-family: var(--mono); font-size: 9px; line-height: 2.3; color: var(--tk-text); letter-spacing: .1em; font-weight: 400; white-space: nowrap; }
 
+/* ── SPEC-IDEAS §4: самопомощь «🆘 ключ не работает» (раскрывашка как howto) ── */
+.sos-assure {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .1em; line-height: 1.9;
+  color: var(--tk-mut); text-transform: uppercase; margin-bottom: 8px;
+}
+.sos .rfbtn { margin-top: 13px; }
+.sos .appbtn { margin-top: 9px; }
+
 /* ── штрих-код (JS рисует уникальный из токена; до этого — CSS-фолбэк) ── */
 .barcode {
   height: 36px; margin: 16px 0 9px; border-radius: 3px; opacity: .92;
@@ -489,7 +515,7 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
 /* ── ховеры только там, где есть курсор ── */
 @media (hover: hover) and (pointer: fine) {
   .appbtn:hover { transform: translateY(-1px); opacity: .92; }
-  .copybtn:hover, .abtn:hover, .buybtn:hover, .qrbox:hover { transform: translateY(-1px); }
+  .copybtn:hover, .abtn:hover, .buybtn:hover, .qrbox:hover, .rnwbtn:hover { transform: translateY(-1px); }
   .rfbtn:not([disabled]):hover { transform: translateY(-1px); border-color: var(--tk-dots); }
   .thbtn:hover { transform: scale(1.12); }
   .linkbox:hover { border-color: var(--tk-dots); }
@@ -506,6 +532,8 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   .rrow { font-size: 12.5px; gap: 8px; }
   .flagchip { width: 27px; height: 21px; }
   .stamp { right: -8px; }
+  /* SPEC-IDEAS §1: пилюля продления не переносится на узких экранах */
+  .rnwbtn { font-size: 9px; letter-spacing: .12em; padding: 12px 15px; gap: 6px; }
 }
 @media (max-width: 339px) {
   .qrbox img { width: 148px; height: 148px; }
@@ -624,6 +652,12 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     <div class="buywrap" id="buyNewWrap" hidden>
       <a class="buybtn" id="buyBtn" href="https://t.me/FamasSellerBot">КУПИТЬ НОВЫЙ</a>
     </div>
+    <!-- SPEC-IDEAS §1: продление — показываем, только если API отдаёт canRenew
+         (мягкая деградация); кнопка ведёт в бота, там «🔄 Продлить» у ключа -->
+    <div class="buywrap" id="renewWrap" hidden>
+      <a class="rnwbtn" id="renewBtn" href="https://t.me/FamasSellerBot" rel="noopener">🔄 ПРОДЛИТЬ</a>
+      <p class="renew-note">жми — продление оформляется в боте, у этого ключа в профиле</p>
+    </div>
 
     <div class="perf" aria-hidden="true"></div>
 
@@ -689,6 +723,29 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
             <div class="hs"><b>01</b><span>Поставь одно из приложений: Happ, v2rayTun или v2rayNG — ссылки на сторы под кнопками выше.</span></div>
             <div class="hs"><b>02</b><span>Вернись сюда и нажми «ОТКРЫТЬ В …» — подписка добавится сама. Либо скопируй ссылку и вставь в приложении («добавить из буфера»), либо сканируй QR.</span></div>
             <div class="hs"><b>03</b><span>Выбери сервер и жми подключить. Серверы внутри подписки обновляются сами — ссылка одна навсегда.</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SPEC-IDEAS §4: самопомощь «🆘 ключ не работает» — заверение (серверы
+         живые + резерв), шаги и «🔄 ОБНОВИТЬ» (перезапросить /api/key) -->
+    <div class="howto sos" id="sosWrap" hidden>
+      <button type="button" class="howto-btn" id="sosBtn" aria-expanded="false" aria-controls="sosPanel">
+        <span>🆘 КЛЮЧ НЕ РАБОТАЕТ?</span>
+        <span class="hx" aria-hidden="true">+</span>
+      </button>
+      <div class="howto-panel" id="sosPanel">
+        <div class="howto-clip">
+          <div class="howto-body">
+            <p class="sos-assure">спокойно: серверы в подписке живые и обновляются сами, внутри есть резервные — обычно хватает шага 01</p>
+            <div class="hs"><b>01</b><span>Обнови подписку в VPN-приложении (⟳ у профиля) — или удали профиль и добавь ссылку заново кнопками выше.</span></div>
+            <div class="hs"><b>02</b><span>Выбери в приложении другой сервер из списка — внутри их несколько, плюс резервные.</span></div>
+            <div class="hs"><b>03</b><span>Не помогло? Нажми «ОБНОВИТЬ» ниже — подтянутся свежие живые серверы; дальше — «Продлить» или поддержка.</span></div>
+            <button type="button" class="rfbtn" id="sosRefresh" aria-label="Обновить статус серверов и данные ключа">
+              <span class="ric" aria-hidden="true">🔄</span><span>ОБНОВИТЬ</span>
+            </button>
+            <a class="appbtn" href="https://t.me/sigmatik323" target="_blank" rel="noopener">✍️ НАПИСАТЬ В ПОДДЕРЖКУ</a>
           </div>
         </div>
       </div>
@@ -951,6 +1008,8 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     $('deadNote').hidden = true;
     $('lifeBar').hidden = true;
     $('buyNewWrap').hidden = true;
+    $('renewWrap').hidden = true; /* SPEC-IDEAS §1 */
+    $('sosWrap').hidden = true;   /* SPEC-IDEAS §4 */
     $('ticket').classList.remove('dead');
 
     document.title = 'FAMAS ⁂ КЛЮЧ № ' + pad6(d.orderId);
@@ -998,6 +1057,20 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       document.title += pending ? ' · не оплачен' : refunded ? ' · возврат' : ' · истёк';
     }
     stamp.hidden = false;
+
+    /* SPEC-IDEAS §1: «🔄 ПРОДЛИТЬ» — только если бэкенд уже отдаёт canRenew
+       (мягкая деградация: поля нет — кнопки нет); цена/срок из renewStars/renewDays */
+    if (d.canRenew === true) {
+      var rnD = Math.max(0, Math.floor(Number(d.renewDays) || 0));
+      var rnS = Math.max(0, Math.floor(Number(d.renewStars) || 0));
+      $('renewBtn').textContent = '🔄 ПРОДЛИТЬ' +
+        (rnD > 0 ? ' +' + rnD + ' ' + ruDays(rnD).toUpperCase() : '') +
+        (rnS > 0 ? ' · ' + rnS + ' ⭐' : '');
+      $('renewWrap').hidden = false;
+    }
+
+    /* SPEC-IDEAS §4: самопомощь — для активных ключей (у истёкших лечит продление) */
+    $('sosWrap').hidden = !d.active;
 
     /* регионы: dotted leaders + svg-флаги с эмодзи-фолбэком.
        SPEC-QTY: count = КУПЛЕННОЕ количество серверов региона (×qty);
@@ -1098,6 +1171,12 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
     this.setAttribute('aria-expanded', open ? 'true' : 'false');
   });
 
+  /* SPEC-IDEAS §4: раскрывашка «🆘 ключ не работает» (тот же grid-трюк) */
+  $('sosBtn').addEventListener('click', function () {
+    var open = $('sosWrap').classList.toggle('open');
+    this.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+
   /* ── QR крупно: тап по QR-квадрату открывает увеличенную версию ── */
   var qrHideTimer = null;
   function openQr() {
@@ -1175,11 +1254,14 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
   function refresh(silent) {
     if (!rendered || refreshing || !token) return;
     refreshing = true;
-    var btn = $('rfBtn');
+    /* SPEC-IDEAS §4: кнопка «ОБНОВИТЬ» есть и в самопомощи — занятость на обеих */
+    var btns = [$('rfBtn'), $('sosRefresh')];
     if (!silent) {
-      btn.disabled = true;
-      btn.classList.add('busy');
-      btn.setAttribute('aria-busy', 'true');
+      for (var bi = 0; bi < btns.length; bi++) {
+        btns[bi].disabled = true;
+        btns[bi].classList.add('busy');
+        btns[bi].setAttribute('aria-busy', 'true');
+      }
     }
     var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     var tmr = ctl ? setTimeout(function () { ctl.abort(); }, 15000) : null;
@@ -1215,13 +1297,17 @@ body.theming, body.theming * { transition: background-color .25s ease, color .25
       .then(function () {
         if (tmr) clearTimeout(tmr);
         refreshing = false;
-        btn.disabled = false;
-        btn.classList.remove('busy');
-        btn.removeAttribute('aria-busy');
+        for (var bj = 0; bj < btns.length; bj++) {
+          btns[bj].disabled = false;
+          btns[bj].classList.remove('busy');
+          btns[bj].removeAttribute('aria-busy');
+        }
       });
   }
 
   $('rfBtn').addEventListener('click', function () { refresh(false); });
+  /* SPEC-IDEAS §4: «ОБНОВИТЬ» из самопомощи — тот же перезапрос /api/key */
+  $('sosRefresh').addEventListener('click', function () { refresh(false); });
 
   /* авто-перезапрос статуса (SPEC-HARDEN ч.1 §4): в фоне не дёргаем, при возврате — догоняем */
   setInterval(function () {

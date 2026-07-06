@@ -323,6 +323,28 @@
   </div>
 </div>
 
+<!-- ── «🆘 ключ не работает» — самопомощь (SPEC-IDEAS §4): заверение, шаги,
+     «🔄 обновить» перечитывает /api/me — данные и живые серверы свежие ── -->
+<div class="ovl fixovl" id="fixOvl" role="dialog" aria-modal="true" aria-label="Ключ не работает — что делать" hidden>
+  <div class="ovl-card gl fixcard">
+    <div class="fix-glyph" aria-hidden="true">🆘</div>
+    <h2 class="serif ovl-title">НЕ РАБОТАЕТ?</h2>
+    <p class="mono tiny ovl-sub">спокойно: серверы живые, в подписке есть<br>резервные — обычно хватает обновления</p>
+    <div class="fix-live mono tiny" id="fixLive" hidden></div>
+    <div class="fix-steps">
+      <div class="hs"><b class="mono">01</b><span>Обнови подписку в VPN-приложении (⟳ у профиля) — или удали профиль и добавь ссылку заново со страницы ключа.</span></div>
+      <div class="hs"><b class="mono">02</b><span>Выбери в приложении другой сервер из списка — внутри их несколько, плюс резервные.</span></div>
+      <div class="hs"><b class="mono">03</b><span>Не помогло? Жми «🔄 Продлить» у ключа или напиши в поддержку — поможем быстро.</span></div>
+    </div>
+    <button type="button" class="btn accent big wfull" id="btnFixRefresh"><span class="b-lbl">🔄 ОБНОВИТЬ ДАННЫЕ</span><span class="b-spin" aria-hidden="true"></span></button>
+    <div class="fix-row">
+      <button type="button" class="btn secondary big" id="btnFixPage">СТРАНИЦА КЛЮЧА</button>
+      <button type="button" class="btn secondary big" id="btnFixSupport">✍️ ПОДДЕРЖКА</button>
+    </div>
+    <button type="button" class="btn ghost big wfull" id="btnFixClose">ЗАКРЫТЬ</button>
+  </div>
+</div>
+
 <!-- ── bottom-sheet настроек ── -->
 <div class="sheet-back" id="sheetBack" hidden></div>
 <div class="sheet gl" id="sheet" role="dialog" aria-modal="true" aria-label="Настройки" hidden>

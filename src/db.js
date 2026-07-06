@@ -195,6 +195,25 @@ function migrate() {
     'CREATE INDEX IF NOT EXISTS idx_configs_region2 ON configs(list_type, country_iso, active, alive)'
   );
 
+  // SPEC-IDEAS §1: продление подписки. renew_of — id продлеваемого заказа (renewal-заказ = «чек»
+  // на продление, НЕ ключ; NULL у обычных заказов). columnExists-guard идемпотентен.
+  if (!columnExists('orders', 'renew_of')) {
+    db.exec('ALTER TABLE orders ADD COLUMN renew_of INTEGER');
+  }
+  // SPEC-IDEAS §2: стадия уведомления об истечении: 0=не слали, 3=слали «за ≤3 дн»,
+  // 1=слали «за ≤1 дн», -1=слали «истёк» (финал). Существующие строки получают 0.
+  if (!columnExists('orders', 'notify_stage')) {
+    db.exec('ALTER TABLE orders ADD COLUMN notify_stage INTEGER DEFAULT 0');
+  }
+  // SPEC-IDEAS §3: тикеты поддержки (юзер пишет в боте, админ отвечает через бота).
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS tickets(
+       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+       username TEXT, ts INTEGER, message TEXT, status TEXT DEFAULT 'open',
+       admin_reply TEXT, replied_by INTEGER, replied_at INTEGER)`
+  );
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id, status)');
+
   // SPEC-V3 §A.1: журнал ВСЕХ действий в боте (для расследований/контроля админов/активности).
   // Идемпотентно (IF NOT EXISTS): на существующей БД ничего не ломает. Индексы под фильтры
   // «по юзеру + время» и «по действию + время» (лента сортируется ts DESC).
@@ -1135,8 +1154,10 @@ function soldHostPortsMap() {
   const reserve = Math.max(0, Math.floor(Number(config.SUB_RESERVE_PER_REGION) || 0));
   let orders = [];
   try {
+    // SPEC-IDEAS §1: renewal-«чеки» пропускаем — их regions/qty лишь копия оригинала (оригинал уже тут).
     orders = stmt(
-      `SELECT * FROM orders WHERE status IN ('paid','gift') AND expires_at IS NOT NULL AND expires_at >= ?`
+      `SELECT * FROM orders WHERE status IN ('paid','gift') AND renew_of IS NULL
+         AND expires_at IS NOT NULL AND expires_at >= ?`
     ).all(now());
   } catch (e) {
     orders = [];
@@ -1384,6 +1405,9 @@ function aliveStats() {
  * qty ({iso:count} | Map | JSON-строка) → orders.qty (JSON); отсутствует → NULL (SPEC-QTY §3).
  * listType ('black'|'white', SPEC-SOURCES §4.4) → orders.list_type; дефолт 'black' (совместимость):
  * buildSub собирает подписку из этого пула.
+ * renewOf (int, SPEC-IDEAS §1) → orders.renew_of: renewal-заказ («чек» продления заказа №renewOf,
+ * regions/qty — копия оригинала для суммы). Такой заказ НЕ ключ: исключается из ordersOfUser/
+ * activeOrdersOf/уведомлений; при оплате применяется applyRenewal(renewOf). Дефолт NULL (обычный заказ).
  */
 function createOrder(opts) {
   const o = opts || {};
@@ -1397,6 +1421,10 @@ function createOrder(opts) {
   const bonusApplied = Math.max(0, Math.floor(Number(o.bonusApplied) || 0));
   const chargeId = o.chargeId == null ? null : String(o.chargeId);
   const listType = o.listType === 'white' ? 'white' : 'black';
+  const renewOf =
+    o.renewOf != null && Number.isInteger(Number(o.renewOf)) && Number(o.renewOf) > 0
+      ? Number(o.renewOf)
+      : null;
 
   // qty: {iso:count} → JSON; Map → объект → JSON; строка — как есть; пусто → NULL.
   let qtyJson = null;
@@ -1411,8 +1439,8 @@ function createOrder(opts) {
   }
 
   const info = stmt(
-    `INSERT INTO orders(user_id, regions, stars, status, token, charge_id, created_at, paid_at, expires_at, free_applied, qty, bonus_applied, list_type)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO orders(user_id, regions, stars, status, token, charge_id, created_at, paid_at, expires_at, free_applied, qty, bonus_applied, list_type, renew_of)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     Number(o.userId) || 0,
     regionsJson,
@@ -1426,7 +1454,8 @@ function createOrder(opts) {
     freeApplied,
     qtyJson,
     bonusApplied,
-    listType
+    listType,
+    renewOf
   );
   return { id: Number(info.lastInsertRowid), token };
 }
@@ -1455,11 +1484,197 @@ function setOrderStatus(id, status) {
   stmt('UPDATE orders SET status=? WHERE id=?').run(String(status), Number(id));
 }
 
-/** заказы пользователя (paid|gift), новые сверху */
+/** заказы пользователя (paid|gift), новые сверху. SPEC-IDEAS §1: renewal-«чеки» (renew_of) — не ключи. */
 function ordersOfUser(userId) {
   return stmt(
-    `SELECT * FROM orders WHERE user_id=? AND status IN ('paid','gift') ORDER BY id DESC`
+    `SELECT * FROM orders WHERE user_id=? AND status IN ('paid','gift') AND renew_of IS NULL ORDER BY id DESC`
   ).all(Number(userId));
+}
+
+/* ─────────────── продление подписки (SPEC-IDEAS §1) ─────────────── */
+
+/**
+ * renewQuote(order) -> {days, stars, base, extra, regionsCount, servers, totalCost}
+ * Стоимость продления = ЦЕНА этого заказа ЗАНОВО: Σ по регионам (base + extra*(q-1)), где
+ * base = priceStars(раздел по order.list_type: white → белый прайс, иначе основной), q — из
+ * order.qty (старый заказ без qty → каждый регион ×1). days = subDays(). Доступность регионов
+ * НЕ валидируется: продлеваем существующий ключ, даже если регион сейчас скрыт из каталога
+ * (существующий клиент не отрезается — как в выдаче). Бросает Error, если у заказа нет регионов.
+ */
+function renewQuote(order) {
+  if (!order) throw new Error('Заказ не найден');
+  const section = order.list_type === 'white' ? 'white' : 'black'; // black → основной прайс
+  const base = priceStars(section);
+  const extra = extraStars();
+  const qty = parseQtyColumn(order.qty);
+  let regionsCount = 0;
+  let servers = 0;
+  let stars = 0;
+  if (qty) {
+    for (const [isoRaw, cRaw] of Object.entries(qty)) {
+      const iso = String(isoRaw || '').trim().toUpperCase();
+      if (!/^[A-Z]{2}$/.test(iso)) continue;
+      const c = Math.max(1, Math.floor(Number(cRaw) || 1));
+      regionsCount++;
+      servers += c;
+      stars += base + extra * (c - 1);
+    }
+  } else {
+    const uniq = [
+      ...new Set(
+        parseRegionsColumn(order.regions)
+          .map((s) => String(s || '').trim().toUpperCase())
+          .filter((s) => /^[A-Z]{2}$/.test(s))
+      ),
+    ];
+    regionsCount = uniq.length;
+    servers = uniq.length;
+    stars = uniq.length * base;
+  }
+  if (regionsCount === 0) throw new Error('У заказа нет регионов — продление невозможно');
+  return { days: subDays(), stars, base, extra, regionsCount, servers, totalCost: stars };
+}
+
+/**
+ * АТОМАРНОЕ оформление ПРОДЛЕНИЯ со скидками (SPEC-IDEAS §1 + SPEC-FREE §7b + SPEC-REFERRAL §4):
+ * free/bonus применяются как в обычной покупке — free гасит base по регионам, бонус-звёзды гасят
+ * остаток. Списывает СРАЗУ (одна транзакция) и возвращает реально применённое — тот же контракт,
+ * что reserveOrder, но без валидации доступности (см. renewQuote). Звать в МОМЕНТ создания
+ * renewal-заказа (bot cb renew / server POST /api/renew).
+ * reserveRenewal(userId, order) -> {days, base, extra, totalCost, regionsCount, servers,
+ *   freeUsed, discount(=discountFree), discountFree, bonusUsed, stars, fullyFree}
+ */
+function reserveRenewal(userId, order) {
+  const quote = renewQuote(order); // бросит на битом заказе — free/бонус не тронуты
+  const tx = db.transaction(() => {
+    const freeUsed = consumeFree(userId, Math.min(getFree(userId), quote.regionsCount));
+    const discountFree = freeUsed * quote.base;
+    const afterFree = Math.max(0, quote.totalCost - discountFree);
+    const bonusUsed = consumeBonus(userId, afterFree);
+    const stars = Math.max(0, afterFree - bonusUsed);
+    return {
+      days: quote.days,
+      base: quote.base,
+      extra: quote.extra,
+      totalCost: quote.totalCost,
+      regionsCount: quote.regionsCount,
+      servers: quote.servers,
+      freeUsed,
+      discount: discountFree,
+      discountFree,
+      bonusUsed,
+      stars,
+      fullyFree: stars === 0 && quote.regionsCount > 0,
+    };
+  });
+  return tx();
+}
+
+/**
+ * applyRenewal(origOrderId, addDays) -> обновлённый заказ | null (SPEC-IDEAS §1).
+ * Продлить оригинал: expires_at = max(now, expires_at) + addDays*86400 (истёк — от now, активен —
+ * от текущего срока). Заодно notify_stage=0 — напоминания об истечении (SPEC-IDEAS §2) взводятся
+ * заново на новый период. Идемпотентность продления — на уровне renewal-заказа (вызывающий
+ * применяет строго один раз: переход pending→paid / разовое fully-free оформление).
+ */
+function applyRenewal(origOrderId, addDays) {
+  const id = Number(origOrderId);
+  const days = Math.floor(Number(addDays));
+  if (!Number.isInteger(id) || id <= 0 || !Number.isFinite(days) || days <= 0) return null;
+  const order = getOrder(id);
+  if (!order) return null;
+  const t = now();
+  const from = Math.max(t, Number(order.expires_at) || 0);
+  stmt('UPDATE orders SET expires_at=?, notify_stage=0 WHERE id=?').run(from + days * 86400, id);
+  return getOrder(id);
+}
+
+/* ─────────────── уведомления об истечении (SPEC-IDEAS §2) ─────────────── */
+
+/**
+ * ordersForNotify(nowSec) -> [order...] — кандидаты на напоминание: выданные ключи (paid|gift,
+ * НЕ renewal-«чеки»), у которых до expires_at осталось ≤3 дн (или уже истёк) и финальная стадия
+ * (-1 «истёк») ещё не отправлена. Решение «какую стадию слать» — в src/notify.js. Пусто при сбое.
+ */
+function ordersForNotify(nowSec) {
+  const t = Math.floor(Number(nowSec) || now());
+  try {
+    return stmt(
+      `SELECT * FROM orders
+        WHERE status IN ('paid','gift') AND renew_of IS NULL AND expires_at IS NOT NULL
+          AND COALESCE(notify_stage,0) != -1 AND expires_at <= ?
+        ORDER BY expires_at ASC LIMIT 500`
+    ).all(t + 3 * 86400);
+  } catch (e) {
+    return [];
+  }
+}
+
+/** Выставить стадию уведомления заказа (0|3|1|-1). Тихо глотает сбои (журнал не роняет работу). */
+function setNotifyStage(orderId, stage) {
+  try {
+    stmt('UPDATE orders SET notify_stage=? WHERE id=?').run(
+      Math.floor(Number(stage) || 0),
+      Number(orderId)
+    );
+  } catch (e) {
+    /* не критично */
+  }
+}
+
+/* ─────────────── тикеты поддержки (SPEC-IDEAS §3) ─────────────── */
+
+/** createTicket({userId, username, message}) -> {id}. message режется до 2000 симв. */
+function createTicket(t) {
+  const rec = t || {};
+  const info = stmt(
+    `INSERT INTO tickets(user_id, username, ts, message, status) VALUES(?,?,?,?,'open')`
+  ).run(
+    Number(rec.userId) || 0,
+    rec.username != null ? String(rec.username) : null,
+    now(),
+    String(rec.message == null ? '' : rec.message).slice(0, 2000)
+  );
+  return { id: Number(info.lastInsertRowid) };
+}
+
+function getTicket(id) {
+  return stmt('SELECT * FROM tickets WHERE id=?').get(Number(id));
+}
+
+/** Ответ админа: status='answered', admin_reply/replied_by/replied_at. Возвращает тикет. */
+function setTicketReply(id, reply, adminId) {
+  const aid = Number(adminId);
+  stmt(
+    `UPDATE tickets SET status='answered', admin_reply=?, replied_by=?, replied_at=? WHERE id=?`
+  ).run(
+    String(reply == null ? '' : reply).slice(0, 2000),
+    Number.isFinite(aid) && aid > 0 ? aid : null,
+    now(),
+    Number(id)
+  );
+  return getTicket(id);
+}
+
+/**
+ * openTicketsCount(userId?) -> int. С userId — открытые тикеты юзера (антиспам ≤5/юзер);
+ * без — всего открытых (счётчик для админ-панели). 0 при сбое.
+ */
+function openTicketsCount(userId) {
+  try {
+    if (userId == null) {
+      return Number(stmt(`SELECT COUNT(*) AS c FROM tickets WHERE status='open'`).get().c) || 0;
+    }
+    return (
+      Number(
+        stmt(`SELECT COUNT(*) AS c FROM tickets WHERE status='open' AND user_id=?`).get(
+          Number(userId)
+        ).c
+      ) || 0
+    );
+  } catch (e) {
+    return 0;
+  }
 }
 
 /* ─────────────── объединённый ключ (SPEC-MERGE §3/§4) ─────────────── */
@@ -1515,11 +1730,12 @@ function serverKeyOf(row) {
 /**
  * activeOrdersOf(userId) -> [order...] (SPEC-MERGE §3). Выданные заказы (paid|gift; FREE — как paid,
  * т.к. создаётся со status='paid') с НЕ вышедшим сроком (now<=expires_at). Свежие сверху (id DESC).
+ * SPEC-IDEAS §1: renewal-«чеки» (renew_of) исключены — иначе объединённый ключ задвоил бы регионы.
  */
 function activeOrdersOf(userId) {
   const t = now();
   return stmt(
-    `SELECT * FROM orders WHERE user_id=? AND status IN ('paid','gift')
+    `SELECT * FROM orders WHERE user_id=? AND status IN ('paid','gift') AND renew_of IS NULL
        AND expires_at IS NOT NULL AND expires_at >= ? ORDER BY id DESC`
   ).all(Number(userId), t);
 }
@@ -1870,7 +2086,7 @@ function ordersForAdmin(opts) {
 
   const rows = stmt(
     `SELECT o.id, o.user_id, o.regions, o.qty, o.stars, o.charge_id, o.status,
-            o.token, o.created_at, o.paid_at, o.expires_at,
+            o.token, o.created_at, o.paid_at, o.expires_at, o.renew_of,
             u.username AS username, u.first_name AS first_name
        FROM orders o LEFT JOIN users u ON u.id = o.user_id
       WHERE ${whereSql}
@@ -1985,6 +2201,15 @@ module.exports = {
   markOrderPaid,
   setOrderStatus,
   ordersOfUser,
+  renewQuote,
+  reserveRenewal,
+  applyRenewal,
+  ordersForNotify,
+  setNotifyStage,
+  createTicket,
+  getTicket,
+  setTicketReply,
+  openTicketsCount,
   activeOrdersOf,
   liveRowsForOrder,
   mergedBundle,

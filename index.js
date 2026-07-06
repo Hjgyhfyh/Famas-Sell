@@ -8,6 +8,7 @@ const dbmod = require('./src/db');
 const inventory = require('./src/inventory');
 const botmod = require('./src/bot');
 const saleslog = require('./src/saleslog');
+const notify = require('./src/notify');
 const { createServer } = require('./src/server');
 
 const ts = () => new Date().toISOString();
@@ -62,6 +63,10 @@ async function main() {
   // 5. Long polling
   if (!config.SKIP_BOT) {
     await bot.api.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+    // SPEC-IDEAS §2: авто-напоминания об истечении подписки (таймер ~30 мин, unref).
+    // bot.api работает и до старта polling; при NOTIFY_ENABLED=0 — no-op.
+    notify.startNotifier(bot.api);
+    log(`Notifier: напоминания об истечении ${config.NOTIFY_ENABLED ? 'включены' : 'выключены'}.`);
     bot
       .start({
         allowed_updates: ['message', 'callback_query', 'pre_checkout_query'],
