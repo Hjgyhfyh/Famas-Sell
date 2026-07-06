@@ -29,6 +29,7 @@ const db = require('./db');
 const util = require('./util');
 const inventory = require('./inventory');
 const subscription = require('./subscription');
+const saleslog = require('./saleslog');
 const tgauth = require('./tgauth');
 
 // По контракту §7 tgauth экспортирует validateInitData; страховка на случай экспорта функцией.
@@ -292,6 +293,14 @@ function createServer(botApi) {
         db.logEvent('free_order', { orderId: created.id, userId: auth.user.id, regions: isos, qty: qtyInput, freeApplied: q.freeUsed });
       } catch (e) {
         logErr('order/logEvent', e);
+      }
+      // SPEC-LOG §5: лог бесплатной выдачи (через mini app) в приватный канал.
+      // botApi может быть null (SKIP_BOT) — saleslog это сам глотает (no-op). Fire-and-forget.
+      try {
+        const fullOrder = db.getOrder(created.id);
+        saleslog.logSale(botApi, fullOrder, 'free').catch(() => {});
+      } catch (e) {
+        logErr('order/saleslog', e);
       }
       return res.json({
         ok: true,

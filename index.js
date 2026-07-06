@@ -7,6 +7,7 @@ const config = require('./src/config');
 const dbmod = require('./src/db');
 const inventory = require('./src/inventory');
 const botmod = require('./src/bot');
+const saleslog = require('./src/saleslog');
 const { createServer } = require('./src/server');
 
 const ts = () => new Date().toISOString();
@@ -64,7 +65,13 @@ async function main() {
     bot
       .start({
         allowed_updates: ['message', 'callback_query', 'pre_checkout_query'],
-        onStart: (me) => log(`Бот запущен: @${me.username} (long polling)`),
+        onStart: (me) => {
+          log(`Бот запущен: @${me.username} (long polling)`);
+          // SPEC-LOG §5: гарантировать закреплённое сообщение статистики в канале продаж.
+          // onStart => bot.init() уже прошёл, bot.api готов. Fire-and-forget, ошибки глотаем —
+          // канал не должен влиять на работу бота. При выключенной фиче — no-op.
+          saleslog.ensureStats(bot.api).catch(() => {});
+        },
       })
       .catch((e) => logErr('Бот: polling завершился с ошибкой:', (e && e.message) || e));
   } else {

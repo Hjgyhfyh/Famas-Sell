@@ -42,6 +42,12 @@ const config = {
   DB_PATH: envStr('DB_PATH', './data/famas.db'),
   SKIP_BOT: /^(1|true|yes)$/i.test(envStr('SKIP_BOT', '0')) ? 1 : 0,
   BOT_USERNAME: envStr('BOT_USERNAME', 'FamasSellerBot').replace(/^@/, ''),
+  // SPEC-LOG §1: приватный канал логов продаж + живая статистика.
+  // Дефолт — канал владельца. Пусто/'0' → логирование ВЫКЛЮЧЕНО (saleslog — no-op),
+  // бот работает как раньше. Бот должен быть админом канала (post/edit/delete/pin).
+  SALES_CHANNEL_ID: envStr('SALES_CHANNEL_ID', '-1004297326871'),
+  // Через сколько минут самоудаляется сообщение о покупке в канале.
+  SALE_LOG_TTL_MIN: envNum('SALE_LOG_TTL_MIN', 5),
 };
 
 // Каталог для БД должен существовать до открытия better-sqlite3.

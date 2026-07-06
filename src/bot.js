@@ -16,6 +16,7 @@ const db = require('./db');
 const util = require('./util');
 const inventory = require('./inventory');
 const subscription = require('./subscription');
+const saleslog = require('./saleslog');
 
 const { esc, fmtDate, fmtDateTime, isoToFlag } = util;
 
@@ -1234,6 +1235,10 @@ function createBot() {
         ctx.api,
         `💰 Продажа #${id} · ${userLabel(ctx.from)} · ${sp.total_amount} ⭐ · ${flagsOf(parseRegions(order)) || '—'}`
       );
+      // SPEC-LOG §5: лог продажи в приватный канал (самоудаляемый пост + статистика).
+      // Строго на переходе pending→paid (идемпотентно к дубль-апдейту). Fire-and-forget:
+      // saleslog всё глотает сам, .catch — последний рубеж, выдачу не роняем.
+      saleslog.logSale(ctx.api, order, 'paid').catch((e) => console.error('[bot] saleslog paid:', errText(e)));
     }
   });
 
@@ -1436,6 +1441,8 @@ function createBot() {
         ctx.api,
         `🎁 Бесплатная выдача #${created.id} · ${userLabel(ctx.from)} · Стран: ${q.regionsCount} · Серверов: ${q.servers}`
       );
+      // SPEC-LOG §5: лог бесплатной выдачи по промо-регионам в канал (fire-and-forget).
+      saleslog.logSale(ctx.api, order, 'free').catch((e) => console.error('[bot] saleslog free:', errText(e)));
       return;
     }
 
