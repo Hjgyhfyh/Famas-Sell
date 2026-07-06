@@ -4,6 +4,7 @@
  * SPEC §5: start(), refreshNow(), lastRefresh. Ошибки сети процесс НЕ роняют.
  */
 const fs = require('node:fs');
+const net = require('node:net');
 const crypto = require('node:crypto');
 const config = require('./config');
 const db = require('./db');
@@ -11,8 +12,12 @@ const util = require('./util');
 
 const FETCH_TIMEOUT_MS = 30000;
 
-/** {at:unix, ok:bool, total:int, error:string|null} — мутируется на месте каждым refreshNow */
-const lastRefresh = { at: 0, ok: false, total: 0, error: null };
+// SPEC-QUALITY §4: сейфгард — если недоступных больше этой доли от проверенных
+// (вероятный сетевой сбой на VDS/резолвере), TCP-результаты прогона НЕ применяем.
+const HEALTHCHECK_MAX_DEAD_FRACTION = 0.85;
+
+/** {at, ok, total, alive, error} — мутируется на месте каждым refreshNow */
+const lastRefresh = { at: 0, ok: false, total: 0, alive: 0, error: null };
 
 let timer = null;
 let inflight = null;
@@ -48,6 +53,155 @@ async function loadSourceText() {
   }
 }
 
+/**
+ * Одна TCP-проверка доступности host:port. Успешное соединение → true, иначе false
+ * (ошибка/таймаут/отказ). Никогда не бросает и не оставляет висящих сокетов/таймеров.
+ */
+function tcpAlive(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    let socket;
+    let timer = null;
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      try {
+        if (socket) socket.destroy();
+      } catch (e) {
+        // сокет уже закрыт
+      }
+      resolve(ok);
+    };
+    try {
+      socket = net.connect({ host: String(host), port: Number(port) || 0 });
+    } catch (e) {
+      resolve(false);
+      return;
+    }
+    timer = setTimeout(() => finish(false), Math.max(1, Number(timeoutMs) || 4000));
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+    socket.once('timeout', () => finish(false));
+    try {
+      socket.setTimeout(Math.max(1, Number(timeoutMs) || 4000));
+    } catch (e) {
+      // не критично
+    }
+  });
+}
+
+/** Прогнать worker по items пулом заданного размера; results[i] соответствует items[i]. */
+async function runPool(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let idx = 0;
+  const n = Math.max(1, Math.min(Math.floor(Number(concurrency) || 1), items.length || 1));
+  const runners = [];
+  for (let k = 0; k < n; k++) {
+    runners.push(
+      (async () => {
+        for (;;) {
+          const i = idx++;
+          if (i >= items.length) break;
+          try {
+            results[i] = await worker(items[i], i);
+          } catch (e) {
+            results[i] = false;
+          }
+        }
+      })()
+    );
+  }
+  await Promise.all(runners);
+  return results;
+}
+
+/**
+ * SPEC-QUALITY §4: прогон здоровья после upsert.
+ * 1) блэклист (синхронно): каждый паттерн HOST_BLACKLIST → alive=0;
+ * 2) TCP-живость (если HEALTHCHECK_ENABLED): пулом проверить hostsToCheck(); успех→alive=1,
+ *    иначе→alive=0. СЕЙФГАРД: если недоступных > 85% проверенных — TCP-результаты НЕ применять
+ *    (оставить прежний alive), только блэклист;
+ * 3) logEvent('healthcheck', aliveStats()).
+ * Ошибки глотаются, процесс не роняется, event loop не блокируется.
+ */
+async function runHealthcheck() {
+  try {
+    // 1) блэклист — быстрый синхронный проход
+    const bl = config.HOST_BLACKLIST || [];
+    for (const p of bl) {
+      try {
+        db.setAliveByHostPattern(p, 0);
+      } catch (e) {
+        // один паттерн не должен ронять весь прогон
+      }
+    }
+
+    // 2) TCP-живость
+    if (config.HEALTHCHECK_ENABLED) {
+      let hosts = [];
+      try {
+        hosts = db.hostsToCheck();
+      } catch (e) {
+        hosts = [];
+      }
+      if (hosts.length) {
+        const timeoutMs = config.HEALTHCHECK_TIMEOUT_MS;
+        const conc = config.HEALTHCHECK_CONCURRENCY;
+        const results = await runPool(hosts, conc, (h) => tcpAlive(h.host, h.port, timeoutMs));
+        const checked = hosts.length;
+        let up = 0;
+        for (let i = 0; i < checked; i++) if (results[i] === true) up++;
+        const down = checked - up;
+        const deadFraction = checked > 0 ? down / checked : 0;
+
+        if (deadFraction > HEALTHCHECK_MAX_DEAD_FRACTION) {
+          // сейфгард: вероятный сетевой сбой — не трогаем alive, только блэклист остаётся
+          try {
+            db.logEvent('healthcheck_skip', {
+              checked,
+              up,
+              down,
+              deadFraction: Number(deadFraction.toFixed(3)),
+            });
+          } catch (e) {
+            // журнал не критичен
+          }
+          console.error(
+            `[${new Date().toISOString()}] inventory: healthcheck пропущен (сейфгард): ` +
+              `${down}/${checked} недоступны (${Math.round(deadFraction * 100)}%) — TCP не применён`
+          );
+        } else {
+          for (let i = 0; i < checked; i++) {
+            const h = hosts[i];
+            try {
+              db.setAliveByHostPort(h.host, h.port, results[i] === true ? 1 : 0);
+            } catch (e) {
+              // отдельная запись не должна ронять прогон
+            }
+          }
+        }
+      }
+    }
+
+    // 3) статистика в журнал
+    try {
+      db.logEvent('healthcheck', db.aliveStats());
+    } catch (e) {
+      // журнал не критичен
+    }
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    try {
+      db.logEvent('healthcheck', { error: msg });
+    } catch (e2) {
+      // журнал не критичен
+    }
+    console.error(`[${new Date().toISOString()}] inventory: ошибка healthcheck: ${msg}`);
+  }
+}
+
 async function doRefresh() {
   try {
     const text = await loadSourceText();
@@ -80,14 +234,26 @@ async function doRefresh() {
       db.setSetting('source_hash', bodyHash);
     }
 
+    // SPEC-QUALITY §4: прогон здоровья каждый refresh (в т.ч. при неизменившемся
+    // источнике — сервер мог отвалиться с прошлой проверки). Не роняет процесс.
+    await runHealthcheck();
+
+    let alive = 0;
+    try {
+      alive = db.aliveStats().alive;
+    } catch (e) {
+      alive = 0;
+    }
+    // регионов теперь считаем по живым (regionsSummary фильтрует alive)
     const regions = db.regionsSummary().length;
 
     lastRefresh.at = nowSec();
     lastRefresh.ok = true;
     lastRefresh.total = total;
+    lastRefresh.alive = alive;
     lastRefresh.error = null;
 
-    const out = { ok: true, total, added, revived, deactivated, regions };
+    const out = { ok: true, total, alive, added, revived, deactivated, regions };
     db.logEvent('refresh', { ...out, skipped });
     return out;
   } catch (e) {

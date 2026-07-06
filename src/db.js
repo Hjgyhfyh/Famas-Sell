@@ -80,6 +80,12 @@ function migrate() {
   if (!columnExists('orders', 'qty')) {
     db.exec('ALTER TABLE orders ADD COLUMN qty TEXT');
   }
+  // SPEC-QUALITY §2: «живость» сервера. alive=1 — прошёл фильтр (не в блэклисте и доступен);
+  // alive=0 — мусор/недоступен. DEFAULT 1: новые/существующие конфиги живы до первой проверки
+  // (чтобы не пропадали мгновенно) — healthcheck сам расставит 0/1.
+  if (!columnExists('configs', 'alive')) {
+    db.exec('ALTER TABLE configs ADD COLUMN alive INTEGER DEFAULT 1');
+  }
 }
 
 /* ───────────────────── users ───────────────────── */
@@ -223,11 +229,16 @@ function normalizeQtyLenient(input) {
   return map;
 }
 
-/** Map<iso, кол-во активных серверов> — «available» для валидации qty. */
+/**
+ * Map<iso, кол-во ЖИВЫХ серверов> — «available» для валидации qty (SPEC-QUALITY §3).
+ * «Продаваемый» сервер = active=1 AND alive=1, поэтому потолок покупки — число живых
+ * (совпадает с count из regionsSummary, чтобы клиент не мог заказать больше, чем выдадим).
+ */
 function availabilityMap() {
   const map = new Map();
   const rows = stmt(
-    `SELECT country_iso AS iso, COUNT(*) AS count FROM configs WHERE active=1 GROUP BY country_iso`
+    `SELECT country_iso AS iso, COUNT(*) AS count FROM configs
+      WHERE active=1 AND alive=1 GROUP BY country_iso`
   ).all();
   for (const r of rows) map.set(r.iso, Number(r.count) || 0);
   return map;
@@ -468,9 +479,11 @@ function regionPopularity() {
  */
 function regionsSummary() {
   const pop = regionPopularity();
+  // SPEC-QUALITY §3: регион считаем по живым серверам (active=1 AND alive=1);
+  // регион с 0 живых не показывается и не продаётся.
   const rows = stmt(
     `SELECT country_iso AS iso, MAX(country_name) AS name, MAX(flag) AS flag, COUNT(*) AS count
-     FROM configs WHERE active=1 GROUP BY country_iso`
+     FROM configs WHERE active=1 AND alive=1 GROUP BY country_iso`
   ).all();
   return rows
     .filter((r) => r.count > 0)
@@ -485,23 +498,30 @@ function regionsSummary() {
     .sort((a, b) => String(a.nameRu).localeCompare(String(b.nameRu), 'ru'));
 }
 
-/** активные конфиги указанных регионов, сорт. country_name, city */
+/** живые конфиги указанных регионов (active=1 AND alive=1), сорт. country_name, city */
 function configsForRegions(isos) {
   const list = (Array.isArray(isos) ? isos : []).map((s) => String(s)).filter(Boolean);
   if (!list.length) return [];
   const ph = list.map(() => '?').join(',');
   return stmt(
-    `SELECT * FROM configs WHERE active=1 AND country_iso IN (${ph}) ORDER BY country_name, city`
+    `SELECT * FROM configs WHERE active=1 AND alive=1 AND country_iso IN (${ph})
+      ORDER BY country_name, city`
   ).all(...list);
 }
 
-/** для ISO без активных конфигов — по 1 самому свежему (max last_seen) неактивному */
+/**
+ * Крайний случай (SPEC-QUALITY §3): для ISO без ЖИВЫХ конфигов — по 1 самому свежему
+ * (max last_seen) неактивному, чтобы подписка старого заказа не пустела. Приоритет —
+ * всегда живым (configsForRegions), это только deep fallback.
+ */
 function fallbackForRegions(isos) {
   const list = (Array.isArray(isos) ? isos : []).map((s) => String(s)).filter(Boolean);
   const out = [];
   for (const iso of list) {
-    const hasActive = stmt('SELECT 1 AS x FROM configs WHERE active=1 AND country_iso=? LIMIT 1').get(iso);
-    if (hasActive) continue;
+    const hasAlive = stmt(
+      'SELECT 1 AS x FROM configs WHERE active=1 AND alive=1 AND country_iso=? LIMIT 1'
+    ).get(iso);
+    if (hasAlive) continue;
     const row = stmt(
       'SELECT * FROM configs WHERE active=0 AND country_iso=? ORDER BY last_seen DESC LIMIT 1'
     ).get(iso);
@@ -521,8 +541,9 @@ function fallbackForRegions(isos) {
 function configsForRegionsQty(qtyMap) {
   const map = normalizeQtyLenient(qtyMap);
   const out = [];
+  // SPEC-QUALITY §3: РОВНО count из ЖИВЫХ (active=1 AND alive=1), стабильно по hash.
   const selActive = stmt(
-    `SELECT * FROM configs WHERE active=1 AND country_iso=? ORDER BY hash ASC`
+    `SELECT * FROM configs WHERE active=1 AND alive=1 AND country_iso=? ORDER BY hash ASC`
   );
   const selFallback = stmt(
     `SELECT * FROM configs WHERE active=0 AND country_iso=? ORDER BY last_seen DESC, hash ASC`
@@ -540,6 +561,79 @@ function configsForRegionsQty(qtyMap) {
     for (const c of chosen) out.push(c);
   }
   return out;
+}
+
+/* ─────────────── здоровье серверов: alive (SPEC-QUALITY §3/§4) ─────────────── */
+
+/** Совпадает ли host с любой подстрокой блэклиста (lowercase-сравнение). */
+function isBlacklistedHost(host) {
+  const h = String(host == null ? '' : host).toLowerCase();
+  if (!h) return false;
+  const bl = config.HOST_BLACKLIST || [];
+  for (const p of bl) {
+    if (p && h.includes(p)) return true;
+  }
+  return false;
+}
+
+/**
+ * hostsToCheck() -> [{host, port}] — уникальные пары среди active=1 конфигов, исключая
+ * заблэклисченные хосты и пустые host/port (для TCP-проверки живости, SPEC-QUALITY §4).
+ * alive НЕ фильтруем: ранее «мёртвый» (недоступный) хост надо перепроверить — он мог ожить.
+ */
+function hostsToCheck() {
+  const rows = stmt(
+    `SELECT DISTINCT host, port FROM configs
+      WHERE active=1 AND host IS NOT NULL AND host<>'' AND port>0`
+  ).all();
+  const out = [];
+  for (const r of rows) {
+    if (isBlacklistedHost(r.host)) continue;
+    out.push({ host: String(r.host), port: Number(r.port) || 0 });
+  }
+  return out;
+}
+
+/** Проставить alive всем конфигам с данным host:port. Возвращает число затронутых строк. */
+function setAliveByHostPort(host, port, alive) {
+  const a = alive ? 1 : 0;
+  const info = stmt('UPDATE configs SET alive=? WHERE host=? AND port=?').run(
+    a,
+    String(host == null ? '' : host),
+    Number(port) || 0
+  );
+  return info.changes;
+}
+
+/**
+ * setAliveByHostPattern(pattern, alive) — проставить alive всем, где host LIKE %pattern%
+ * (для блэклиста). LIKE в SQLite регистронезависим для ASCII. Возвращает число строк.
+ */
+function setAliveByHostPattern(pattern, alive) {
+  const p = String(pattern == null ? '' : pattern).trim();
+  if (!p) return 0;
+  const a = alive ? 1 : 0;
+  const like = '%' + p.replace(/[\\%_]/g, '\\$&') + '%';
+  const info = stmt(`UPDATE configs SET alive=? WHERE host LIKE ? ESCAPE '\\'`).run(a, like);
+  return info.changes;
+}
+
+/**
+ * aliveStats() -> {active, alive, deadBlacklist, deadUnreachable} (SPEC-QUALITY §3).
+ * active — всего активных; alive — из них живых; мёртвые (active=1,alive=0) классифицируем
+ * по host: в блэклисте → deadBlacklist, иначе → deadUnreachable (не прошли TCP).
+ */
+function aliveStats() {
+  const active = Number(stmt('SELECT COUNT(*) AS c FROM configs WHERE active=1').get().c) || 0;
+  const alive =
+    Number(stmt('SELECT COUNT(*) AS c FROM configs WHERE active=1 AND alive=1').get().c) || 0;
+  const dead = stmt('SELECT host FROM configs WHERE active=1 AND alive=0').all();
+  let deadBlacklist = 0;
+  for (const r of dead) {
+    if (isBlacklistedHost(r.host)) deadBlacklist++;
+  }
+  const deadUnreachable = dead.length - deadBlacklist;
+  return { active, alive, deadBlacklist, deadUnreachable };
 }
 
 /* ───────────────────── orders ───────────────────── */
@@ -818,6 +912,10 @@ module.exports = {
   configsForRegions,
   fallbackForRegions,
   configsForRegionsQty,
+  hostsToCheck,
+  setAliveByHostPort,
+  setAliveByHostPattern,
+  aliveStats,
   createOrder,
   getOrder,
   getOrderByToken,

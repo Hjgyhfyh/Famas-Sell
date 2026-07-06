@@ -20,6 +20,30 @@ function envNum(name, def) {
   return Number.isFinite(n) ? n : def;
 }
 
+function envBool(name, def) {
+  return /^(1|true|yes|on)$/i.test(envStr(name, def ? '1' : '0')) ? 1 : 0;
+}
+
+/** Список подстрок из env (через запятую), lowercase; пусто → def. */
+function envList(name, def) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return def;
+  const arr = String(raw)
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return arr.length ? arr : def;
+}
+
+// SPEC-QUALITY §1: заведомо ненадёжные хосты (free-хостинги, туннели). Если host сервера
+// содержит любую из этих подстрок — сервер считаем «мусорным» (alive=0), не продаём/не выдаём.
+const DEFAULT_HOST_BLACKLIST = [
+  'up.railway.app', 'railway.app', 'onrender.com', 'render.com', 'herokuapp.com',
+  'glitch.me', 'repl.co', 'replit.dev', 'trycloudflare.com', 'ngrok.io',
+  'ngrok-free.app', 'serveo.net', 'localhost.run', 'loca.lt', 'cfargotunnel.com',
+  'workers.dev', 'pagekite.me', 'telebit.io',
+];
+
 const config = {
   BOT_TOKEN: envStr('BOT_TOKEN', ''),
   ADMIN_IDS: envStr('ADMIN_IDS', '927937870')
@@ -49,6 +73,16 @@ const config = {
   // Через сколько минут самоудаляется сообщение о покупке в канале (SPEC-LOG §7b: дефолт 60).
   // Удаление персистентное (свипер по таблице sale_log_msgs) — переживает рестарт бота.
   SALE_LOG_TTL_MIN: envNum('SALE_LOG_TTL_MIN', 60),
+
+  // ── SPEC-QUALITY §1: фильтр качества серверов (продаём/выдаём только живые) ──
+  // Массив подстрок доменов заведомо ненадёжных хостов (lowercase), env-переопределяемый.
+  HOST_BLACKLIST: envList('HOST_BLACKLIST', DEFAULT_HOST_BLACKLIST),
+  // TCP-проверка живости серверов после каждого обновления источника (1=вкл, дефолт 1).
+  HEALTHCHECK_ENABLED: envBool('HEALTHCHECK_ENABLED', 1),
+  // Таймаут одного TCP-подключения при проверке, мс.
+  HEALTHCHECK_TIMEOUT_MS: envNum('HEALTHCHECK_TIMEOUT_MS', 4000),
+  // Сколько хостов проверять одновременно (размер пула).
+  HEALTHCHECK_CONCURRENCY: envNum('HEALTHCHECK_CONCURRENCY', 24),
 };
 
 // Каталог для БД должен существовать до открытия better-sqlite3.

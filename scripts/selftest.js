@@ -9,6 +9,10 @@
 process.env.DB_PATH = './data/test.db';
 process.env.SOURCE_URL = 'file:fixtures/sample-source.txt';
 process.env.SKIP_BOT = '1';
+// SPEC-QUALITY: на file-фикстуре реальные IP недоступны из теста — TCP-проверку выключаем,
+// чтобы она не помечала серверы мёртвыми (проверки подписки должны работать на живых).
+// Блэклист (railway и т.п.) при этом всё равно отрабатывает в refreshNow — его и проверяем.
+process.env.HEALTHCHECK_ENABLED = '0';
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -199,6 +203,57 @@ async function main() {
     check('старый заказ: orders.qty IS NULL', oOldRow.qty == null, `qty=${oOldRow.qty}`);
     const subOld = subscription.buildSub(oOldRow);
     check('buildSub старого заказа (qty NULL) → все серверы региона', subOld.lines.length === rBig.count, `lines=${subOld.lines.length} vs count=${rBig.count}`);
+  }
+
+  // 8. SPEC-QUALITY — блэклист/живость (детерминированно, без сети)
+  const stats0 = db.aliveStats();
+  check(
+    'aliveStats: active/alive/deadBlacklist/deadUnreachable — числа',
+    ['active', 'alive', 'deadBlacklist', 'deadUnreachable'].every((k) => typeof stats0[k] === 'number'),
+    JSON.stringify(stats0)
+  );
+  check('aliveStats: alive <= active', stats0.alive <= stats0.active, JSON.stringify(stats0));
+  // блэклист отработал в refreshNow: railway-хосты фикстуры (US) помечены мёртвыми
+  check('aliveStats: deadBlacklist >= 1 (блэклист сработал)', stats0.deadBlacklist >= 1, JSON.stringify(stats0));
+  // TCP выключен (HEALTHCHECK_ENABLED=0) → недоступных быть не должно
+  check('aliveStats: deadUnreachable === 0 (TCP выключен)', stats0.deadUnreachable === 0, JSON.stringify(stats0));
+
+  const hc = db.hostsToCheck();
+  check('hostsToCheck: непусто и пары {host,port}', hc.length > 0 && hc.every((h) => h.host && typeof h.port === 'number'), `len=${hc.length}`);
+  check('hostsToCheck: исключает railway-хосты (блэклист)', hc.every((h) => !/railway\.app/i.test(h.host)));
+
+  // setAliveByHostPort: круговой рейс — «убить» один host:port и вернуть
+  const liveRegion = db.regionsSummary()[0];
+  if (liveRegion) {
+    const cfgs = db.configsForRegions([liveRegion.iso]);
+    const before = cfgs.length;
+    if (before > 0) {
+      const one = cfgs[0];
+      const changed = db.setAliveByHostPort(one.host, one.port, 0);
+      check('setAliveByHostPort: >=1 строка изменена', changed >= 1, `changed=${changed}`);
+      const after = db.configsForRegions([liveRegion.iso]);
+      check('setAliveByHostPort(0): мёртвый host исчез из живой выдачи', after.every((c) => !(c.host === one.host && c.port === one.port)));
+      db.setAliveByHostPort(one.host, one.port, 1);
+      const restored = db.configsForRegions([liveRegion.iso]);
+      check('setAliveByHostPort(1): регион восстановлен', restored.length === before, `${restored.length} vs ${before}`);
+    }
+  }
+
+  // setAliveByHostPattern: живой регион, у которого «убили» все host по паттерну, исчезает
+  const patVictim = db.regionsSummary().find((r) => {
+    const rows = db.configsForRegions([r.iso]);
+    return rows.length > 0 && rows.every((c) => c.host);
+  });
+  if (patVictim) {
+    const rows = db.configsForRegions([patVictim.iso]);
+    const hosts = Array.from(new Set(rows.map((c) => c.host)));
+    for (const h of hosts) db.setAliveByHostPattern(h, 0);
+    const gone = db.regionsSummary().some((r) => r.iso === patVictim.iso);
+    check('setAliveByHostPattern(0): регион без живых исчезает из regionsSummary', gone === false, `iso=${patVictim.iso}`);
+    check('configsForRegionsQty мёртвого региона → пусто (нет живых)', db.configsForRegionsQty({ [patVictim.iso]: 5 }).length === 0);
+    // вернуть живость
+    for (const h of hosts) db.setAliveByHostPattern(h, 1);
+    check('setAliveByHostPattern(1): регион вернулся', db.regionsSummary().some((r) => r.iso === patVictim.iso));
   }
 }
 
