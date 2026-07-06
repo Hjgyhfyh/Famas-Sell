@@ -1172,6 +1172,48 @@ function soldHostPortsMap() {
  * первыми, ORDER BY alive_checked_at ASC NULLS FIRST). limit>0 ограничивает ротационный батч; сверх
  * него всегда добавляются все проданные. limit пуст/0 → все (обратная совместимость).
  */
+/**
+ * Обрезка каталога до проверяемого размера: держать не более MAX_SERVERS_PER_REGION активных
+ * серверов на каждый (list_type, country_iso), лишние → active=0 (приоритет: alive DESC,
+ * last_seen DESC, id DESC). Страны из COUNTRY_BLACKLIST — деактивируются целиком. XX не трогаем
+ * (geo их классифицирует; из каталога/healthcheck они и так исключены). Одна транзакция, идемпотентно.
+ * -> {deactivated, kept}
+ */
+function pruneRegions() {
+  let max = Math.floor(Number(config.MAX_SERVERS_PER_REGION));
+  if (!Number.isFinite(max) || max < 3) max = 25;
+  const run = db.transaction(() => {
+    let deactivated = 0;
+    // 1) чёрный список стран — деактивировать целиком (ложная гео)
+    const bl = (config.COUNTRY_BLACKLIST || []).filter((s) => /^[A-Z]{2}$/.test(String(s)));
+    if (bl.length) {
+      const ph = bl.map(() => '?').join(',');
+      deactivated += stmt(
+        `UPDATE configs SET active=0 WHERE active=1 AND country_iso IN (${ph})`
+      ).run(...bl).changes;
+    }
+    // 2) лимит на регион (кроме XX) через оконную нумерацию
+    deactivated += stmt(
+      `UPDATE configs SET active=0 WHERE id IN (
+         SELECT id FROM (
+           SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY list_type, country_iso
+             ORDER BY alive DESC, last_seen DESC, id DESC
+           ) AS rn
+           FROM configs WHERE active=1 AND country_iso<>'XX'
+         ) WHERE rn > ?
+       )`
+    ).run(max).changes;
+    const kept = stmt("SELECT COUNT(*) AS n FROM configs WHERE active=1 AND country_iso<>'XX'").get().n;
+    return { deactivated, kept: Number(kept) || 0 };
+  });
+  try {
+    return run();
+  } catch (e) {
+    return { deactivated: 0, kept: 0, error: String((e && e.message) || e) };
+  }
+}
+
 function hostsToCheck(limit) {
   let lim = Math.floor(Number(limit));
   if (!Number.isFinite(lim) || lim <= 0) lim = 0;
@@ -1179,7 +1221,7 @@ function hostsToCheck(limit) {
     `SELECT host, port, MIN(alive_checked_at) AS ck,
        MAX(CASE WHEN uri LIKE '%security=reality%' OR uri LIKE '%security=tls%' THEN 1 ELSE 0 END) AS tls
       FROM configs
-      WHERE active=1 AND host IS NOT NULL AND host<>'' AND port>0
+      WHERE active=1 AND host IS NOT NULL AND host<>'' AND port>0 AND country_iso<>'XX'
       GROUP BY host, port ORDER BY (ck IS NULL) DESC, ck ASC`;
   const rows = lim > 0 ? stmt(base + ' LIMIT ?').all(lim) : stmt(base).all();
   const out = [];
@@ -1930,6 +1972,7 @@ module.exports = {
   aliveCountForRegions,
   availabilityMap,
   hostsToCheck,
+  pruneRegions,
   hostsForGeo,
   setGeo,
   setHealthResult,

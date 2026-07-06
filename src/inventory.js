@@ -563,6 +563,15 @@ async function doRefreshMulti() {
     // Реконсиляция ТОЛЬКО при полном успехе всех источников (SPEC-SOURCES §7 риск#1).
     const r = db.upsertConfigs(merged, { reconcile: allOk });
 
+    // Обрезка каталога до проверяемого размера (лимит серверов на регион) — чтобы healthcheck
+    // успевал отсеивать мёртвые на слабом VDS и не грузил процесс.
+    try {
+      const pr = db.pruneRegions();
+      db.logEvent('prune', pr);
+    } catch (e) {
+      /* prune не критичен */
+    }
+
     await runHealthcheckGuarded();
     await runGeoEnrichGuarded();
 

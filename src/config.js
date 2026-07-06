@@ -181,6 +181,8 @@ const config = {
   // ── SPEC-QUALITY §1: фильтр качества серверов (продаём/выдаём только живые) ──
   // Массив подстрок доменов заведомо ненадёжных хостов (lowercase), env-переопределяемый.
   HOST_BLACKLIST: envList('HOST_BLACKLIST', DEFAULT_HOST_BLACKLIST),
+  // Лимит активных серверов на регион (обрезка каталога до проверяемого размера на слабом VDS).
+  MAX_SERVERS_PER_REGION: envNum('MAX_SERVERS_PER_REGION', 25),
   // TCP-проверка живости серверов после каждого обновления источника (1=вкл, дефолт 1).
   HEALTHCHECK_ENABLED: envBool('HEALTHCHECK_ENABLED', 1),
   // Таймаут одного TCP-подключения при проверке, мс.
