@@ -566,7 +566,9 @@ function parseVlessLine(uri, opts) {
       countryName,
       city,
       label,
-      category: o.category === 'white' ? 'white' : 'black',
+      // «Белые списки» = премиум-протокол REALITY (самый устойчивый в РФ), определяется по САМОМУ
+      // конфигу, а не по источнику (источники падают/скачут). reality → white (50⭐), иначе → black.
+      category: securityRank(uri) === 3 ? 'white' : 'black',
       _sec: securityRank(uri),
       _uuidValid: looksLikeUuid(uuid),
       hash: configHash(uri, !!o.includeUuid),
@@ -680,10 +682,10 @@ function mergeInto(map, text, opts) {
       stats.added++;
     } else {
       const best = pickBest(prev, cfg);
-      // black побеждает: сервер, встреченный в любом основном (black) источнике 1-25, продаётся в
-      // основном каталоге. Категорию 'white' сохраняют ТОЛЬКО серверы, эксклюзивные для whitelist-
-      // источника (файл 26) — это и есть отдельный NEW-набор «белые списки».
-      if (prev.category === 'black' || cfg.category === 'black') best.category = 'black';
+      // Категория теперь по протоколу (см. parseVlessLine): если ЛЮБОЙ вариант этого host:port —
+      // REALITY (white), сервер попадает в премиум-раздел «Белые списки». pickBest и так предпочитает
+      // reality-представителя, но подстрахуемся явно.
+      if (prev.category === 'white' || cfg.category === 'white') best.category = 'white';
       map.set(cfg.hash, best);
       stats.merged++;
     }
