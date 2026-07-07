@@ -633,10 +633,12 @@
   /* ── SPEC-GROWTH2 §B + SPEC-V3 §B: каталоги black/white/unstable ── */
   function fetchCatalog(list) {
     var qs = list === 'black' ? '' : '?list=' + encodeURIComponent(list);
+    /* сервер нормализует 'black'→'main' (v3), поэтому для сверки эха считаем их одним разделом */
+    var normList = function (x) { return x === 'main' ? 'black' : x; };
     return fetchJson(API + '/regions' + qs).then(function (d) {
       /* сервер без поддержки раздела (деплой-скью/старый кэш) эхом отдаёт другой
          list — не рисуем ЧУЖОЙ каталог под чужим заголовком/ценой: пустая витрина */
-      if (d && d.ok && d.list && d.list !== list) {
+      if (d && d.ok && d.list && normList(d.list) !== normList(list)) {
         return {
           ok: true, list: list, regions: [], price: 0,
           extra: d.extra, subDays: d.subDays, total: 0, updatedAt: d.updatedAt || 0
